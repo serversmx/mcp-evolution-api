@@ -2,17 +2,19 @@
  * Dify integration — /dify/*
  */
 
-import type { ToolDef, ToolGroup } from "../../types.js";
-import { makeBotCrudTools, makeFetchSessionsTool } from "./botFactory.js";
+import { z } from "zod";
+import { makeBotGroup, SETTINGS_REQUIRED_FULL } from "./botFactory.js";
 
-const tools: ToolDef[] = [
-  ...makeBotCrudTools({ group: "dify", base: "dify", label: "Dify" }),
-  makeFetchSessionsTool("dify", "dify", "Dify"),
-];
-
-export const difyGroup: ToolGroup = {
+export const difyGroup = makeBotGroup({
   group: "dify",
-  core: false,
+  base: "dify",
   label: "Dify",
-  tools,
-};
+  envFlag: "DIFY_ENABLED",
+  specificShape: {
+    botType: z.enum(["chatBot", "textGenerator", "agent", "workflow"]).describe("Dify app type."),
+    apiUrl: z.string().optional().describe("Dify API base URL, e.g. https://api.dify.ai/v1."),
+    apiKey: z.string().optional().describe("Dify app API key."),
+  },
+  requiredSpecific: ["botType"],
+  settingsRequired: SETTINGS_REQUIRED_FULL,
+});

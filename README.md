@@ -4,15 +4,22 @@ Servidor [MCP](https://modelcontextprotocol.io) (Model Context Protocol) que exp
 la **Evolution API v2** (WhatsApp) como herramientas para clientes MCP como Claude
 Desktop, Claude Code o Cursor.
 
-- **121 herramientas** con cobertura completa de la API v2 (instancias, mensajes,
-  chats, grupos, perfil, etiquetas, webhooks e integraciones).
+Versión del servidor MCP: **0.2.0**. Consulta el [CHANGELOG](CHANGELOG.md).
+
+- **169 herramientas** con cobertura de la API v2 (instancias, mensajes, chats,
+  grupos, perfil, etiquetas, proxy, plantillas Meta, catálogo, webhooks, colas de
+  eventos, Chatwoot y 7 integraciones de chatbot).
+- **Contrato verificado** contra el código fuente de Evolution API `2.3.7` y
+  `2.4.0-rc2`: método, ruta y campos obligatorios de cada herramienta.
 - **TypeScript** sobre el SDK oficial, transporte **stdio**.
 - **Imagen Docker** publicada en GHCR y ejecutable con `npx` (sin clonar).
-- **Multi-instancia**: cada herramienta acepta `instance`; opcionalmente una
+- **Multi-instancia**: las operaciones sobre instancias aceptan `instance`; opcionalmente una
   instancia por defecto.
 - **Grupos activables** vía `EVOLUTION_TOOLS` para no saturar el contexto del modelo.
 
-Probado contra Evolution API `2.3.7`.
+Compatible con Evolution API `2.3.7` y `2.4` (verificado contra `2.4.0-rc2`). Las herramientas que solo existen
+desde 2.4 lo indican en su descripción (**"Requires Evolution API 2.4+"**); en 2.3.7
+responden 404 y el error lo explica.
 
 ## Requisitos
 
@@ -101,29 +108,38 @@ Variables de entorno (ver [.env.example](.env.example)):
 
 `EVOLUTION_TOOLS` controla qué grupos se exponen:
 
-- **Sin definir** → grupos núcleo: `instance, settings, message, chat, profile, label, group, webhook` (64 tools).
-- `all` → todos los grupos (121 tools).
+- **Sin definir** → grupos núcleo: `server, instance, settings, message, chat, profile, label, group, webhook` (72 tools).
+- `all` → todos los grupos (169 tools).
 - Lista explícita, p.ej. `message,chat,group` → solo esos.
 
-| Grupo | Núcleo | Herramientas |
-|---|:---:|---|
-| `instance` | ✅ | crear, conectar, estado, reiniciar, presencia, logout, borrar, listar |
-| `settings` | ✅ | leer/escribir settings del instance |
-| `message` | ✅ | texto, media, audio, sticker, ubicación, contacto, reacción, poll, lista, botones, status, ptv |
-| `chat` | ✅ | verificar números, marcar leído/no leído, archivar, borrar, presencia, bloquear, foto, base64, buscar chats/mensajes/contactos/status, editar |
-| `profile` | ✅ | perfil propio y de negocio, privacidad, nombre/estado/foto |
-| `label` | ✅ | listar y asignar etiquetas |
-| `group` | ✅ | crear, participantes, invitaciones, ajustes, ephemeral, salir |
-| `webhook` | ✅ | configurar/leer webhook |
-| `websocket` | — | configurar/leer websocket |
-| `rabbitmq` | — | configurar/leer RabbitMQ |
-| `sqs` | — | configurar/leer AWS SQS |
-| `chatwoot` | — | configurar/leer Chatwoot |
-| `typebot` | — | CRUD bots + start/sessions |
-| `openai` | — | CRUD bots + credenciales + sessions |
-| `dify` | — | CRUD bots + sessions |
-| `evolutionbot` | — | CRUD bots + sessions |
-| `flowise` | — | CRUD bots + sessions |
+| Grupo | Núcleo | Tools | Herramientas |
+|---|:---:|:---:|---|
+| `server` | ✅ | 1 | verificar que la apikey es la global (`/verify-creds`) |
+| `instance` | ✅ | 8 | crear (settings planos + webhook), conectar, estado, reiniciar, presencia, logout, borrar, listar |
+| `settings` | ✅ | 2 | leer/escribir settings de la instancia (actualización parcial segura) |
+| `message` | ✅ | 14 | texto, media (imagen/video/documento/audio), audio PTT, sticker, ubicación, contacto, reacción, poll, lista, botones, status, ptv, plantilla Meta, carrusel (2.4+) |
+| `chat` | ✅ | 18 | verificar números, marcar leído/reproducido (2.4+)/no leído, archivar, borrar, presencia, bloquear, foto, base64, buscar chats/mensajes/contactos/recibos, chat por JID, editar, votos de poll (2.4+), canales (2.4+) |
+| `profile` | ✅ | 8 | perfil propio y de negocio, privacidad (actualización parcial segura), nombre/estado/foto |
+| `label` | ✅ | 2 | listar y asignar etiquetas |
+| `group` | ✅ | 17 | crear, participantes, invitaciones, ajustes, quién agrega miembros (2.4+), ephemeral, salir |
+| `webhook` | ✅ | 2 | configurar/leer webhook |
+| `proxy` | — | 2 | configurar/leer el proxy de la instancia |
+| `template` | — | 4 | crear/editar/borrar/listar plantillas Meta (solo Cloud API) |
+| `business` | — | 2 | catálogo y colecciones de WhatsApp Business |
+| `websocket` | — | 2 | configurar/leer websocket |
+| `rabbitmq` | — | 2 | configurar/leer RabbitMQ |
+| `sqs` | — | 2 | configurar/leer AWS SQS |
+| `nats` | — | 2 | configurar/leer NATS |
+| `kafka` | — | 2 | configurar/leer Kafka |
+| `pusher` | — | 2 | configurar/leer Pusher |
+| `chatwoot` | — | 2 | configurar (actualización parcial segura)/leer Chatwoot |
+| `typebot` | — | 11 | bots + settings + sesiones + ignoreJid + start |
+| `openai` | — | 14 | bots + settings + sesiones + ignoreJid + credenciales + modelos |
+| `dify` | — | 10 | bots + settings + sesiones + ignoreJid |
+| `evolutionbot` | — | 10 | bots + settings + sesiones + ignoreJid |
+| `flowise` | — | 10 | bots + settings + sesiones + ignoreJid |
+| `n8n` | — | 10 | bots + settings + sesiones + ignoreJid |
+| `evoai` | — | 10 | bots + settings + sesiones + ignoreJid |
 
 ## Configuración en tu cliente MCP
 
@@ -248,11 +264,30 @@ Una vez conectado, puedes pedirle a Claude cosas como:
 ## Convenciones de las herramientas
 
 - Nombre: `evolution_<grupo>_<acción>` (p.ej. `evolution_message_send_text`).
-- Cada herramienta acepta `instance` (opcional si hay `EVOLUTION_DEFAULT_INSTANCE`).
+- Las herramientas que operan sobre una instancia aceptan `instance`
+  (opcional si hay `EVOLUTION_DEFAULT_INSTANCE`).
 - Los `number` aceptan dígitos con código de país o JID completo
   (`5215550123` o `5215550123@s.whatsapp.net`).
 - Los errores del API se devuelven como resultado de error con el `status` y el
-  mensaje de Evolution (la apikey nunca aparece en logs ni errores).
+  detalle de validación de Evolution (`response.message`), no solo "Bad Request".
+  La apikey nunca aparece en logs ni errores.
+- **Licencia 2.4**: si el servidor 2.4+ no está activado, todas las llamadas
+  a herramientas de negocio responden 503 `LICENSE_REQUIRED`; el error indica la URL de activación
+  (`/manager/login`) y que reintentar no sirve.
+- **Actualizaciones parciales seguras**: `settings_set`, `profile_update_privacy`,
+  `chatwoot_set`, y `update`/`settings_set` de los bots exigen en el API todos los
+  campos obligatorios. Si omites alguno, la herramienta lee la configuración
+  actual, la combina con lo que pasaste y envía el objeto completo.
+- Los `events` de webhook/websocket/rabbitmq/sqs/nats/kafka/pusher siempre se
+  envían: `[]` (por defecto) significa **todos** los eventos.
+- `message_send_media` permite `transport: "multipart"`: recibe base64 en los
+  argumentos MCP y lo convierte en un archivo binario en el campo HTTP `file`.
+  Para `delay`, `quoted` o menciones usa el transporte `json` (por defecto):
+  Evolution recibe los campos multipart como strings y rechaza esos tipos.
+  Los demás envíos de media aceptan URL/base64 mediante JSON.
+- Se excluyen los receptores de webhooks entrantes, las rutas internas de
+  Baileys/S3, administración de licencias y `call/offer`, que es un stub y no
+  realiza llamadas. Las rutas exclusivas de `develop` tampoco se exponen.
 
 ## Estructura
 
@@ -260,25 +295,38 @@ Una vez conectado, puedes pedirle a Claude cosas como:
 src/
   index.ts            Server MCP (stdio): lista y ejecuta tools
   config.ts           Carga/valida variables de entorno
-  client.ts           Cliente HTTP de Evolution (apikey, errores, timeout)
+  client.ts           Cliente HTTP de Evolution (apikey, errores, 503 de licencia, timeout)
   registry.ts         Filtra grupos según EVOLUTION_TOOLS
   types.ts            Tipos ToolDef / ToolGroup
   schemas/common.ts   Fragmentos zod reutilizables
-  tools/              Un archivo por controlador + integrations/
+  tools/              Un archivo por controlador + integrations/ (eventos, Chatwoot, bots)
+  tools/helpers.ts    Utilidades de handlers (body, merge de configuración)
   smoke.ts            Smoke test de solo lectura
 Dockerfile            Imagen multi-stage (build + runtime no-root)
 .github/workflows/    CI (build) y publicación de la imagen en GHCR
 ```
 
-Las herramientas de bots IA (`typebot`, `openai`, `dify`, `evolutionbot`,
-`flowise`) aceptan el objeto de configuración (`config`/`settings`) tal cual lo
-documenta Evolution API, por su gran cantidad de campos específicos.
+Las herramientas de bots (`typebot`, `openai`, `dify`, `evolutionbot`, `flowise`,
+`n8n`, `evoai`) comparten una misma fábrica con campos tipados: los comunes
+(`enabled`, `triggerType`, `expire`, `keepOpen`, …) más los propios de cada bot
+(p.ej. `url`/`typebot`, `openaiCredsId`/`botType`, `webhookUrl`/`basicAuthPass`,
+`agentUrl`). El bot por defecto de los settings se indica con `fallbackId`.
+
+### Cambios incompatibles en 0.2.0
+
+- Bots: `create`/`update` ya no reciben `config` y `settings_set` ya no recibe
+  `settings`; los campos van directamente en los argumentos.
+- `evolution_message_send_list`: `values` pasa a `sections` y `footerText` es obligatorio.
+- `evolution_chat_send_presence`: `delay` es obligatorio.
+- `evolution_instance_create`: `settings` anidado se reemplaza por campos planos
+  (`rejectCall`, `msgCall`, `groupsIgnore`, …), que es lo que lee el API.
 
 ## Desarrollo
 
 ```bash
 npm run watch    # compila en modo watch
 npm run build    # compila a dist/
+npm test         # compila y ejecuta regresiones sin conexión a un servidor
 npm start        # ejecuta el servidor (requiere env)
 ```
 

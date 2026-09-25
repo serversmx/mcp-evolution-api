@@ -18,7 +18,11 @@ const tools: ToolDef[] = [
       instance: instanceField,
       subject: z.string().describe("Group name."),
       description: z.string().optional().describe("Group description."),
-      participants: z.array(z.string()).min(1).describe("Participant numbers/JIDs."),
+      participants: z
+        .array(z.string())
+        .min(1)
+        .describe("Participant numbers (digits with country code). Numbers not on WhatsApp are dropped."),
+      promoteParticipants: z.boolean().optional().describe("Promote all participants to admin."),
     }),
     handler: async (client, args) => {
       const { instance, ...body } = args;
@@ -28,11 +32,11 @@ const tools: ToolDef[] = [
   },
   {
     name: "evolution_group_update_picture",
-    description: "Update a group's picture by URL.",
+    description: "Update a group's picture from an image URL or raw base64.",
     inputSchema: z.object({
       instance: instanceField,
       groupJid: groupJidField,
-      image: z.string().describe("Image URL."),
+      image: z.string().describe("Image URL or RAW base64 (no 'data:...;base64,' prefix)."),
     }),
     handler: async (client, args) => {
       const inst = client.resolveInstance(args.instance as string | undefined);
@@ -96,7 +100,7 @@ const tools: ToolDef[] = [
   },
   {
     name: "evolution_group_accept_invite",
-    description: "Join a group using an invite code.",
+    description: "Join a group using an invite code (side effect: joins immediately; do not retry blindly).",
     inputSchema: z.object({
       instance: instanceField,
       inviteCode: z.string().describe("Invite code (the part after chat.whatsapp.com/)."),
@@ -124,10 +128,10 @@ const tools: ToolDef[] = [
   },
   {
     name: "evolution_group_send_invite",
-    description: "Send a group invite to one or more numbers.",
+    description: "Send a group invite link to one or more numbers (one text message per number).",
     inputSchema: z.object({
       instance: instanceField,
-      groupJid: groupJidField,
+      groupJid: groupJidField.describe("FULL group JID ending in @g.us (sent in the body, not normalized)."),
       description: z.string().describe("Invitation message."),
       numbers: z.array(z.string()).min(1).describe("Numbers to invite."),
     }),
@@ -207,6 +211,25 @@ const tools: ToolDef[] = [
       return client.post(`/group/updateSetting/${inst}`, {
         query: { groupJid: args.groupJid as string },
         body: { action: args.action },
+      });
+    },
+  },
+  {
+    name: "evolution_group_update_member_add_mode",
+    description:
+      "Set who can add members to a group (admins only or all members). Requires Evolution API 2.4+ (404 on 2.3.7).",
+    inputSchema: z.object({
+      instance: instanceField,
+      groupJid: groupJidField,
+      mode: z
+        .enum(["admin_add", "all_member_add"])
+        .describe("admin_add: only admins add members; all_member_add: every member can add."),
+    }),
+    handler: async (client, args) => {
+      const inst = client.resolveInstance(args.instance as string | undefined);
+      return client.post(`/group/updateMemberAddMode/${inst}`, {
+        query: { groupJid: args.groupJid as string },
+        body: { mode: args.mode },
       });
     },
   },
