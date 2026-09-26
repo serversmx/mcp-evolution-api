@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   ];
 
   if (config.defaultInstance) {
-    const inst = config.defaultInstance;
+    const inst = client.resolveInstance(); // URL-encoded default instance
     checks.push(
       { name: `connectionState/${inst}`, run: () => client.get(`/instance/connectionState/${inst}`) },
       { name: `settings/find/${inst}`, run: () => client.get(`/settings/find/${inst}`) },

@@ -2,17 +2,17 @@
  * Evolution Bot integration — /evolutionBot/*
  */
 
-import type { ToolDef, ToolGroup } from "../../types.js";
-import { makeBotCrudTools, makeFetchSessionsTool } from "./botFactory.js";
+import { z } from "zod";
+import { makeBotGroup, SETTINGS_REQUIRED_FULL } from "./botFactory.js";
 
-const tools: ToolDef[] = [
-  ...makeBotCrudTools({ group: "evolutionbot", base: "evolutionBot", label: "Evolution Bot" }),
-  makeFetchSessionsTool("evolutionbot", "evolutionBot", "Evolution Bot"),
-];
-
-export const evolutionBotGroup: ToolGroup = {
+export const evolutionBotGroup = makeBotGroup({
   group: "evolutionbot",
-  core: false,
+  base: "evolutionBot",
   label: "Evolution Bot",
-  tools,
-};
+  specificShape: {
+    apiUrl: z.string().describe("Your bot endpoint; Evolution POSTs each message and sends back the reply."),
+    apiKey: z.string().optional().describe("Sent as Bearer token to apiUrl."),
+  },
+  requiredSpecific: ["apiUrl"],
+  settingsRequired: SETTINGS_REQUIRED_FULL,
+});

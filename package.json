@@ -1,7 +1,7 @@
 {
   "name": "evolution-api-mcp",
-  "version": "0.1.1",
-  "description": "MCP server for Evolution API v2 (WhatsApp) — full endpoint coverage over stdio.",
+  "version": "0.2.0",
+  "description": "MCP server for Evolution API v2 (WhatsApp) — messaging, management and integrations over stdio.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -17,10 +17,12 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     ".env.example"
   ],
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "watch": "tsc --watch",
     "start": "node dist/index.js",
     "smoke": "node dist/smoke.js",

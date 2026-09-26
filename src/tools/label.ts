@@ -9,7 +9,7 @@ import { instanceField, numberField } from "../schemas/common.js";
 const tools: ToolDef[] = [
   {
     name: "evolution_label_find",
-    description: "List all labels in an instance.",
+    description: "List all labels in an instance (WhatsApp Business accounts only).",
     inputSchema: z.object({ instance: instanceField }),
     handler: async (client, args) => {
       const inst = client.resolveInstance(args.instance as string | undefined);

@@ -2,17 +2,18 @@
  * Flowise integration — /flowise/*
  */
 
-import type { ToolDef, ToolGroup } from "../../types.js";
-import { makeBotCrudTools, makeFetchSessionsTool } from "./botFactory.js";
+import { z } from "zod";
+import { makeBotGroup, SETTINGS_REQUIRED_FLOWISE } from "./botFactory.js";
 
-const tools: ToolDef[] = [
-  ...makeBotCrudTools({ group: "flowise", base: "flowise", label: "Flowise" }),
-  makeFetchSessionsTool("flowise", "flowise", "Flowise"),
-];
-
-export const flowiseGroup: ToolGroup = {
+export const flowiseGroup = makeBotGroup({
   group: "flowise",
-  core: false,
+  base: "flowise",
   label: "Flowise",
-  tools,
-};
+  envFlag: "FLOWISE_ENABLED",
+  specificShape: {
+    apiUrl: z.string().describe("Flowise prediction URL (…/api/v1/prediction/<chatflowId>)."),
+    apiKey: z.string().optional().describe("Flowise API key."),
+  },
+  requiredSpecific: ["apiUrl"],
+  settingsRequired: SETTINGS_REQUIRED_FLOWISE,
+});
