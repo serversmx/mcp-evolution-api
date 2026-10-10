@@ -93,6 +93,8 @@ test("invalid multipart combinations fail before any request", async (t) => {
     { mentionsEveryOne: false },
     { mentioned: ["15551234567@s.whatsapp.net"] },
     { mediatype: "document" },
+    { mediatype: "document", fileName: "invoice" },
+    { mediatype: "audio" },
   ]) {
     await assert.rejects(
       mediaTool.handler(client, mediaTool.inputSchema.parse({ ...base, ...change })),
