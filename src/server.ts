@@ -57,7 +57,7 @@ export function createServer(config: EvolutionConfig, deps: ServerDeps = {}): Se
       const text = stringify(data);
       const bytes = Buffer.byteLength(text, "utf8");
       if (bytes > config.maxResultBytes) {
-        return errorResult(oversizeMessage(name, data, bytes, config.maxResultBytes));
+        return oversizeResult(name, data, bytes, config.maxResultBytes);
       }
       return {
         content: [{ type: "text", text }],
@@ -97,14 +97,81 @@ function describeError(err: unknown): string {
   return String(err);
 }
 
-/** Fields that identify a withheld (media) result. */
-const SUMMARY_FIELDS = ["mimetype", "fileName", "mediaType", "messageType", "size"];
+/** Its result is the media itself, so it is never pruned: returned whole or withheld. */
+const MEDIA_TOOL = "evolution_chat_media_base64";
+
+/** Strings above this many UTF-8 bytes are omitted from an oversized result. */
+const MAX_KEPT_STRING_BYTES = 64 * 1024;
+
+interface Omission {
+  path: string;
+  bytes: number;
+}
+
+/**
+ * Result for data above EVOLUTION_MAX_RESULT_BYTES. Strings over 64 KiB (e.g. the file a media
+ * send echoes in message.base64 when webhook base64 is on) are replaced by a placeholder and the
+ * rest is returned as a normal result when it fits; otherwise an error summarizes the data.
+ */
+function oversizeResult(tool: string, data: unknown, bytes: number, limit: number) {
+  if (tool !== MEDIA_TOOL && data !== null && typeof data === "object") {
+    const omitted: Omission[] = [];
+    const pruned = omitLargeStrings(data, "", omitted);
+    if (omitted.length > 0) {
+      const text = JSON.stringify(pruned);
+      if (Buffer.byteLength(text, "utf8") <= limit) {
+        const list = omitted.map((o) => `${o.path} (${o.bytes} bytes)`).join(", ");
+        const note =
+          `Omitted ${omitted.length} value${omitted.length === 1 ? "" : "s"} over 64 KiB to fit ` +
+          `EVOLUTION_MAX_RESULT_BYTES=${limit} (full result: ${bytes} bytes): ${list}.`;
+        return {
+          content: [
+            { type: "text" as const, text },
+            { type: "text" as const, text: note },
+          ],
+        };
+      }
+    }
+  }
+  return errorResult(oversizeMessage(tool, data, bytes, limit));
+}
+
+/** Copy of `value` with every string over 64 KiB replaced by "<omitted: N bytes>". */
+function omitLargeStrings(value: unknown, path: string, omitted: Omission[]): unknown {
+  if (typeof value === "string") {
+    const bytes = Buffer.byteLength(value, "utf8");
+    if (bytes <= MAX_KEPT_STRING_BYTES) return value;
+    omitted.push({ path, bytes });
+    return `<omitted: ${bytes} bytes>`;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item, i) => omitLargeStrings(item, `${path}[${i}]`, omitted));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        omitLargeStrings(item, path ? `${path}.${key}` : key, omitted),
+      ]),
+    );
+  }
+  return value;
+}
+
+/** Fields that identify a withheld result: a sent message's key, media details. */
+const SUMMARY_FIELDS = ["key", "mimetype", "fileName", "mediaType", "messageType", "size"];
 const MAX_SUMMARY_KEYS = 20;
 
 const MEDIA_HINT =
-  "Download the media from its URL instead (message.mediaUrl when S3/MinIO storage is enabled) or " +
-  "receive it as base64 in webhooks (evolution_webhook_set base64: true). Raise the limit with care: " +
+  "Download the media from its URL instead (message.mediaUrl when S3/MinIO storage is enabled), or " +
+  "receive new media as base64 in webhooks (evolution_webhook_set base64: true; Evolution applies it " +
+  "after the instance reconnects, e.g. evolution_instance_restart). Raise the limit with care: " +
   "Claude Code drops MCP connections whose messages exceed 10 MiB (Claude Desktop: 32 MiB).";
+
+/** The guard only runs after a 2xx response, so the send already went through. */
+const SEND_HINT =
+  "Evolution API accepted this send (HTTP 2xx); only its response is too large to return. " +
+  "Do not retry it: a retry sends the message again.";
 
 /** Error text for a result above EVOLUTION_MAX_RESULT_BYTES: its size, shape and an alternative. */
 function oversizeMessage(tool: string, data: unknown, bytes: number, limit: number): string {
@@ -121,11 +188,13 @@ function oversizeMessage(tool: string, data: unknown, bytes: number, limit: numb
     );
     if (fields.length > 0) parts.push(`${fields.join("; ")}.`);
   }
-  parts.push(
-    tool === "evolution_chat_media_base64"
-      ? MEDIA_HINT
-      : "Narrow the request (filters, pagination) to get a smaller result.",
-  );
+  if (tool === MEDIA_TOOL) {
+    parts.push(MEDIA_HINT);
+  } else if (tool.startsWith("evolution_message_send_")) {
+    parts.push(SEND_HINT);
+  } else {
+    parts.push("Narrow the request (filters, pagination) to get a smaller result.");
+  }
   return parts.join(" ");
 }
 

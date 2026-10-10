@@ -40,6 +40,67 @@ function mockEvolution(t, body, status = 200) {
 
 const labels = [{ id: "1", name: "New customer", color: 1, predefinedId: "1" }];
 
+/** getBase64FromMediaMessage response (Evolution API 2.3.7). */
+function mediaBase64(base64) {
+  return {
+    mediaType: "videoMessage",
+    fileName: "clip.mp4",
+    caption: "Vídeo 🎬",
+    size: { fileLength: "4500000", height: 720, width: 1280 },
+    mimetype: "video/mp4",
+    base64,
+    buffer: null,
+  };
+}
+
+const sentKey = { remoteJid: "5215512345678@s.whatsapp.net", fromMe: true, id: "3EB0C767D26A1D0F7A71B2" };
+const sendMediaArgs = { number: "5215512345678", mediatype: "video", media: "https://cdn.example.test/clip.mp4" };
+
+/**
+ * sendMedia response (Evolution API 2.3.7 prepareMessage of the sent video; buffers serialize as
+ * indexed objects, Longs as {low, high, unsigned}). With webhook base64 enabled,
+ * sendMessageWithTyping also echoes the file in message.base64. 671 bytes without base64.
+ */
+function sentVideo(base64) {
+  return {
+    key: sentKey,
+    pushName: "Você",
+    status: "PENDING",
+    message: {
+      videoMessage: {
+        url: "https://mmg.whatsapp.net/v/t62.7161-24/12345678_clip.enc",
+        mimetype: "video/mp4",
+        fileSha256: { 0: 87, 1: 12, 2: 201, 3: 64 },
+        fileLength: { low: 3225000, high: 0, unsigned: true },
+        seconds: 12,
+        mediaKey: { 0: 18, 1: 240, 2: 7, 3: 99 },
+        caption: "Demo",
+        directPath: "/v/t62.7161-24/12345678_clip.enc",
+        mediaKeyTimestamp: { low: 1760000000, high: 0, unsigned: false },
+      },
+      base64,
+    },
+    messageType: "videoMessage",
+    messageTimestamp: 1760000000,
+    instanceId: "0b6a8c1e-3f5d-4b8a-9c2e-7d1f0a4e5b6c",
+    source: "web",
+  };
+}
+
+/** sendText response (Evolution API 2.3.7 stores extendedTextMessage as conversation). */
+function sentText(text) {
+  return {
+    key: sentKey,
+    pushName: "Você",
+    status: "PENDING",
+    message: { conversation: text },
+    messageType: "conversation",
+    messageTimestamp: 1760000000,
+    instanceId: "0b6a8c1e-3f5d-4b8a-9c2e-7d1f0a4e5b6c",
+    source: "web",
+  };
+}
+
 test("tool calls hit the Evolution endpoint and return its response as text content", async (t) => {
   const requests = mockEvolution(t, labels);
   const client = await connect(t);
@@ -82,16 +143,8 @@ test("results are measured in UTF-8 bytes and a result exactly at the limit is r
 });
 
 test("oversized media is withheld with its size, a summary and download guidance", async (t) => {
-  // getBase64FromMediaMessage shape (Evolution API 2.3.7); its compact JSON is 4277 bytes.
-  mockEvolution(t, {
-    mediaType: "videoMessage",
-    fileName: "clip.mp4",
-    caption: "Vídeo 🎬",
-    size: { fileLength: "4500000", height: 720, width: 1280 },
-    mimetype: "video/mp4",
-    base64: "A".repeat(4096),
-    buffer: null,
-  });
+  // Its compact JSON is 4277 bytes.
+  mockEvolution(t, mediaBase64("A".repeat(4096)));
   const client = await connect(t, { maxResultBytes: 4096 });
   const result = await client.callTool({
     name: "evolution_chat_media_base64",
@@ -133,6 +186,80 @@ test("the oversize summary lists at most 20 top-level keys", async (t) => {
     result.content[0].text,
     / Top-level keys: k0, k1, k2, k3, k4, k5, k6, k7, k8, k9, k10, k11, k12, k13, k14, k15, k16, k17, k18, k19 \(\+5 more\)\. /,
   );
+});
+
+test("a delivered media send that echoes the file in message.base64 stays a success without the file", async (t) => {
+  // 4300000 base64 bytes + 671 bytes of message: over the default 4 MiB limit.
+  mockEvolution(t, sentVideo("A".repeat(4_300_000)), 201);
+  const client = await connect(t);
+  const result = await client.callTool({ name: "evolution_message_send_media", arguments: sendMediaArgs });
+  assert.equal(result.isError, undefined);
+  assert.equal(result.content.length, 2);
+  assert.deepEqual(JSON.parse(result.content[0].text), sentVideo("<omitted: 4300000 bytes>"));
+  const note = result.content[1].text;
+  assert.match(note, /\b1 value\b/);
+  assert.ok(note.includes("message.base64 (4300000 bytes)"), note);
+  assert.ok(note.includes("4300671 bytes"), note);
+  assert.ok(note.includes("EVOLUTION_MAX_RESULT_BYTES=4194304"), note);
+});
+
+test("only strings over 64 KiB of UTF-8 are omitted, with paths that index array items", async (t) => {
+  // "x" x 65536 is exactly 64 KiB and stays; "ñ" x 32769 is 65538 bytes. 131177 bytes in all.
+  mockEvolution(t, [
+    { id: "1", name: "x".repeat(65536), color: 1, predefinedId: null },
+    { id: "2", name: "ñ".repeat(32769), color: 2, predefinedId: null },
+  ]);
+  const client = await connect(t, { maxResultBytes: 70000 });
+  const result = await client.callTool({ name: "evolution_label_find", arguments: {} });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(JSON.parse(result.content[0].text), [
+    { id: "1", name: "x".repeat(65536), color: 1, predefinedId: null },
+    { id: "2", name: "<omitted: 65538 bytes>", color: 2, predefinedId: null },
+  ]);
+  const note = result.content[1].text;
+  assert.ok(note.includes("[1].name (65538 bytes)"), note);
+  assert.equal(note.includes("[0].name"), false, note);
+});
+
+test("evolution_chat_media_base64 is never pruned: oversized media is withheld with download guidance", async (t) => {
+  // 100181 bytes; without its 100000 base64 bytes it would fit in 4096, but the media is the result.
+  mockEvolution(t, mediaBase64("A".repeat(100_000)));
+  const client = await connect(t, { maxResultBytes: 4096 });
+  const result = await client.callTool({
+    name: "evolution_chat_media_base64",
+    arguments: { message: { key: { id: "3EB0C767D26A1D0F7A71" } } },
+  });
+  assert.equal(result.isError, true);
+  assert.equal(result.content.length, 1);
+  const [{ text }] = result.content;
+  assert.match(text, /^Result too large: 100181 bytes exceeds EVOLUTION_MAX_RESULT_BYTES=4096\. /);
+  assert.equal(text.includes("<omitted"), false);
+  assert.match(text, /mediaUrl/);
+  // Evolution caches webhook base64 when the instance connects, and only new messages carry it.
+  assert.match(text, /new media/);
+  assert.match(text, /reconnect/);
+  assert.match(text, /evolution_instance_restart/);
+});
+
+test("an oversized send that omitting values cannot fit is reported as accepted with its key", async (t) => {
+  // Without its base64 the video response is 694 bytes, and the text response has nothing to omit.
+  const responses = [sentVideo("A".repeat(100_000)), sentText("Hola ".repeat(200))];
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify(responses.shift()), { status: 201 }));
+  const client = await connect(t, { maxResultBytes: 512 });
+  for (const [name, args] of [
+    ["evolution_message_send_media", sendMediaArgs],
+    ["evolution_message_send_text", { number: "5215512345678", text: "Hola ".repeat(200) }],
+  ]) {
+    const result = await client.callTool({ name, arguments: args });
+    assert.equal(result.isError, true, name);
+    const [{ text }] = result.content;
+    assert.match(text, /accepted/, name);
+    assert.ok(
+      text.includes('key: {"remoteJid":"5215512345678@s.whatsapp.net","fromMe":true,"id":"3EB0C767D26A1D0F7A71B2"}'),
+      `${name}: ${text}`,
+    );
+    assert.doesNotMatch(text, /Narrow the request/, name);
+  }
 });
 
 test("unknown tools, invalid arguments and API errors become isError results", async (t) => {

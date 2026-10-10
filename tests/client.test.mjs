@@ -153,6 +153,27 @@ test("send timeouts report the effective timeout and warn that the message may s
   );
 });
 
+test("a typebot start timeout warns that the flow may still run and that a retry restarts it", async () => {
+  mock.method(globalThis, "fetch", slowFetch(1000));
+  const shortTimeout = new EvolutionClient({ ...config, timeoutMs: 25 });
+  const body = {
+    url: "https://typebot.example.test",
+    typebot: "welcome",
+    remoteJid: "5215512345678@s.whatsapp.net",
+    startSession: true,
+  };
+  await assert.rejects(shortTimeout.post("/typebot/start/test", { body }), {
+    message: "Request timed out after 25ms: POST /typebot/start/test. The flow may still be running on the " +
+      "server: check the chat (evolution_chat_find_messages) before retrying — a retry deletes that chat's bot " +
+      "sessions of every integration and restarts the flow.",
+  });
+  // Other Typebot writes start no flow.
+  await assert.rejects(
+    shortTimeout.post("/typebot/changeStatus/test", { body: { remoteJid: body.remoteJid, status: "closed" } }),
+    { message: "Request timed out after 25ms: POST /typebot/changeStatus/test" },
+  );
+});
+
 /** Answer every fetch with an Evolution error envelope. */
 function mockError(status, message) {
   mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
@@ -195,6 +216,23 @@ test("develop's Express 5 group crash is explained only for group calls without 
     { message: "Cannot convert undefined or null to object" },
   );
   await assert.rejects(client.get("/chat/findChats/test"), { message: "Cannot convert undefined or null to object" });
+});
+
+test("the same 500 from fetchAllGroups is not called develop-only: on 2.3.7 the instance has no session", async () => {
+  // 2.3.7/rc2 fetchAllGroups runs Object.values(undefined) when the instance has no Baileys client.
+  mockError(500, "Cannot convert undefined or null to object");
+  await assert.rejects(client.get("/group/fetchAllGroups/test", { query: { getParticipants: false } }), (err) => {
+    assert.equal(err.status, 500);
+    assert.doesNotMatch(err.message, /works on 2\.3\.7/);
+    assert.equal(
+      err.message,
+      "Cannot convert undefined or null to object (on Evolution API 2.3.7/2.4.0-rc2 this means the instance " +
+        "has no WhatsApp session loaded — disconnected when the server started, or never connected: check " +
+        "evolution_instance_connection_state and run evolution_instance_connect. On develop builds it is also " +
+        "the known Express 5 regression for group routes without a JSON body.)",
+    );
+    return true;
+  });
 });
 
 test("develop's instance-create foreign-key failure is explained", async () => {

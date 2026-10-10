@@ -188,6 +188,11 @@ function timeoutMessage(method: HttpMethod, path: string, timeoutMs: number, del
       ". The server may still deliver the message after this timeout: check (e.g. " +
       "evolution_chat_find_messages) before retrying — Evolution API 2.3.7 ignores messageId, so a " +
       "retry can send a duplicate.";
+  } else if (method === "POST" && path.startsWith("/typebot/start")) {
+    // Evolution answers only after the flow's opening messages are sent.
+    message +=
+      ". The flow may still be running on the server: check the chat (evolution_chat_find_messages) before " +
+      "retrying — a retry deletes that chat's bot sessions of every integration and restarts the flow.";
   }
   return message;
 }
@@ -238,16 +243,21 @@ function buildApiError(status: number, body: unknown, req: FailedRequest): Evolu
   }
 
   // develop (Express 5 / body-parser 2): req.body stays undefined without a JSON body and
-  // groupValidate's Object.assign(body, ...) throws.
+  // groupValidate's Object.assign(body, ...) throws. 2.3.7/rc2 fetchAllGroups answers the same
+  // 500 when the instance has no WhatsApp client (Object.values(undefined), uncaught).
   if (
     status === 500 &&
     !req.hasBody &&
     req.path.startsWith("/group/") &&
     message.includes("Cannot convert undefined or null to object")
   ) {
-    message +=
-      " (known Evolution API develop/2.4 regression: Express 5 leaves the request body undefined on " +
-      "group routes that carry no JSON body; works on 2.3.7 and 2.4.0-rc2 — report it upstream)";
+    message += req.path.startsWith("/group/fetchAllGroups/")
+      ? " (on Evolution API 2.3.7/2.4.0-rc2 this means the instance has no WhatsApp session loaded — " +
+        "disconnected when the server started, or never connected: check evolution_instance_connection_state " +
+        "and run evolution_instance_connect. On develop builds it is also the known Express 5 regression for " +
+        "group routes without a JSON body.)"
+      : " (known Evolution API develop/2.4 regression: Express 5 leaves the request body undefined on " +
+        "group routes that carry no JSON body; works on 2.3.7 and 2.4.0-rc2 — report it upstream)";
   }
 
   // develop after #2549: instanceName never reaches createInstance, so the first dependent
