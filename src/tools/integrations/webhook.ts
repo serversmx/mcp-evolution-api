@@ -28,9 +28,9 @@ const tools: ToolDef[] = [
         .boolean()
         .optional()
         .describe(
-          "Include media base64 in message event payloads. Evolution applies it after the instance " +
-            "reconnects (e.g. evolution_instance_restart), and media send responses then also carry " +
-            "the full base64.",
+          "Include media base64 in message event payloads. WHATSAPP-BAILEYS instances apply it after they " +
+            "reconnect (e.g. evolution_instance_restart), and their media send responses then also carry the " +
+            "full base64; WHATSAPP-BUSINESS instances never apply it (Evolution API 2.3.7–develop).",
         ),
       events: eventsField,
     }),

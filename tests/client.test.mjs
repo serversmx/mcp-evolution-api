@@ -164,8 +164,8 @@ test("a typebot start timeout warns that the flow may still run and that a retry
   };
   await assert.rejects(shortTimeout.post("/typebot/start/test", { body }), {
     message: "Request timed out after 25ms: POST /typebot/start/test. The flow may still be running on the " +
-      "server: check the chat (evolution_chat_find_messages) before retrying — a retry deletes that chat's bot " +
-      "sessions of every integration and restarts the flow.",
+      "server: check the chat (evolution_chat_find_messages) before retrying — with startSession (the default), " +
+      "a retry deletes that chat's bot sessions of every integration and restarts the flow.",
   });
   // Other Typebot writes start no flow.
   await assert.rejects(

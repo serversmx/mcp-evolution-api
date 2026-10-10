@@ -192,7 +192,8 @@ function timeoutMessage(method: HttpMethod, path: string, timeoutMs: number, del
     // Evolution answers only after the flow's opening messages are sent.
     message +=
       ". The flow may still be running on the server: check the chat (evolution_chat_find_messages) before " +
-      "retrying — a retry deletes that chat's bot sessions of every integration and restarts the flow.";
+      "retrying — with startSession (the default), a retry deletes that chat's bot sessions of every " +
+      "integration and restarts the flow.";
   }
   return message;
 }

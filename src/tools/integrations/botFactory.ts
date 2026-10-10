@@ -210,8 +210,8 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
     .join(", ");
   const nullRefused = storedHasOptional
     ? ""
-    : `; a NULL ${orList(emptyKeys)} must be passed explicitly unless you also send ` +
-      `${orList(optionalKeys)} (then it is sent as "")`;
+    : `; a NULL or empty ${orList(emptyKeys)} must be passed explicitly unless a ${orList(optionalKeys)} is ` +
+      `stored (re-sent automatically) or sent (then it is kept as "")`;
 
   return [
     {
@@ -324,15 +324,28 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
             // Evolution rejects "" only when every key of the body is a required key.
             const acceptsEmpty = Object.keys(body).some((key) => !spec.settingsRequired.includes(key));
             const unset = missingKeys(body, spec.settingsRequired);
-            const blank = unset.filter((key) => emptyKeys.includes(key));
+            // NULL, or already "" (stored by an earlier call or passed now): both need "" accepted.
+            const blank = emptyKeys.filter((key) => unset.includes(key) || body[key] === "");
             if (blank.length > 0 && !acceptsEmpty) {
-              throw new ToolInputError(
-                `Stored ${label} settings have ` +
-                  blank.map((key) => `${key} NULL (${NULL_MEANING[key]})`).join(" and ") +
-                  `. Evolution rejects "" in this request because every field in it is required. To keep ` +
-                  `${blank.length > 1 ? "them" : "it"} empty, also pass ${orList(optionalKeys)} (re-sending ` +
-                  `the current one from evolution_${group}_settings_fetch changes nothing).`,
-              );
+              const storedFallback = (current as Record<string, unknown>).fallbackId;
+              if (typeof storedFallback === "string" && storedFallback) {
+                // Re-sending the stored fallback is a no-op write that makes Evolution accept "".
+                body.fallbackId = storedFallback;
+              } else {
+                throw new ToolInputError(
+                  `Stored ${label} settings have ` +
+                    blank
+                      .map((key) => `${key} ${unset.includes(key) ? "NULL" : "empty"} (${NULL_MEANING[key]})`)
+                      .join(" and ") +
+                    `. Evolution rejects "" in this request because every field in it is required, and no ` +
+                    `fallbackId is stored to re-send. Either pass ${orList(blank)} explicitly, or set fallbackId: ` +
+                    (spec.fallbackIgnored
+                      ? `${label} ignores it at runtime (Evolution API 2.3.7–develop), so any ${label} bot id ` +
+                        "keeps today's behaviour."
+                      : "that bot then answers every message that matches no trigger.") +
+                    " Ask the user if unsure.",
+                );
+              }
             }
             for (const key of unset) {
               if (key in nullEquivalents) body[key] = nullEquivalents[key];

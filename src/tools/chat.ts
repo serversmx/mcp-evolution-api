@@ -209,17 +209,18 @@ const tools: ToolDef[] = [
                 .optional()
                 .describe(
                   "Chat JID. Prefer the phone JID (…@s.whatsapp.net): the MCP also sends it as remoteJidAlt, so " +
-                    "messages stored under the chat's @lid form match too. With an @lid JID, messages sent through " +
-                    "the API to the phone JID (stored without remoteJidAlt) are not matched.",
+                    "received messages stored under the chat's @lid form match too. Messages stored without " +
+                    "remoteJidAlt (sent through the API, or imported by history sync) match only the JID they were " +
+                    "stored under: for a complete history also query the @lid JID.",
                 ),
               remoteJidAlt: z
                 .string()
                 .optional()
                 .describe(
                   "Matched against the stored key.remoteJidAlt, which holds the OTHER form of the chat JID (the " +
-                    "phone JID on @lid-stored messages). Leave it unset: it defaults to remoteJid, which (with the " +
-                    "phone JID) matches both forms. Setting it to the chat's other form drops the messages stored " +
-                    "under that form.",
+                    "phone JID on @lid-stored messages). Leave it unset: it defaults to remoteJid, which with the " +
+                    "phone JID also matches received messages stored under the @lid form. Setting it to the chat's " +
+                    "other form drops the messages stored under that form.",
                 ),
               fromMe: z.boolean().optional().describe("Only true is applied (false is ignored by the server)."),
               participant: z.string().optional().describe("Group sender JID."),
