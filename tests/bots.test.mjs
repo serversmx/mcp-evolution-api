@@ -101,25 +101,110 @@ test("OpenAI assistant updates preserve the assistant ID when the schema-require
   assert.equal("maxTokens" in result, false);
 });
 
-test("bot settings merge keeps false/zero values and excludes metadata and ignored fallback names", async () => {
+/**
+ * fetchSettings of a stored n8n row created by the first bot create (expire 20, keepOpen true,
+ * timePerChar 0): the behaviour fields the create omitted are stored as NULL.
+ */
+function storedN8nSettings() {
+  return {
+    id: "settings-1", expire: 20, keywordFinish: null, delayMessage: null, unknownMessage: null,
+    listeningFromMe: false, stopBotFromMe: false, keepOpen: true, debounceTime: null,
+    n8nIdFallback: null, ignoreJids: null, splitMessages: false, timePerChar: 0,
+    createdAt: "2026-10-01T12:00:00.000Z", updatedAt: "2026-10-01T12:00:00.000Z",
+    instanceId: "internal-instance-id", Fallback: null, fallbackId: null, fallback: null,
+  };
+}
+
+/** fetchSettings of a stored Typebot row (keywordFinish/unknownMessage set, the rest NULL or DB defaults). */
+function storedTypebotSettings(overrides = {}) {
+  return {
+    id: "settings-2", expire: 0, keywordFinish: "bye", delayMessage: null, unknownMessage: "Not understood",
+    listeningFromMe: false, stopBotFromMe: false, keepOpen: false, debounceTime: null,
+    typebotIdFallback: null, ignoreJids: null, splitMessages: false, timePerChar: 50,
+    createdAt: "2026-10-01T12:00:00.000Z", updatedAt: "2026-10-01T12:00:00.000Z",
+    instanceId: "internal-instance-id", Fallback: null, fallbackId: null, fallback: null,
+    ...overrides,
+  };
+}
+
+test("bot settings refuse to invent a finish keyword when the stored one is NULL", async () => {
   const settings = tool("n8n", "settings_set");
-  const client = clientFor({
-    id: "settings-1", instanceId: "internal-instance-id", expire: 20,
-    keywordFinish: null, listeningFromMe: false, stopBotFromMe: false,
-    keepOpen: true, debounceTime: 0, ignoreJids: ["@g.us"], splitMessages: false,
-    timePerChar: 0, n8nIdFallback: "old-bot", fallbackId: "old-bot", Fallback: { id: "old-bot" },
-  });
-  const result = await settings.handler(client, settings.inputSchema.parse({
-    expire: 0, fallbackId: "new-bot", n8nIdFallback: "ignored-input",
+  const client = clientFor(storedN8nSettings());
+  await assert.rejects(
+    settings.handler(client, settings.inputSchema.parse({ expire: 0, fallbackId: "new-bot" })),
+    (err) => err instanceof ToolInputError && /keywordFinish/.test(err.message) &&
+      !/delayMessage|unknownMessage|debounceTime|ignoreJids/.test(err.message),
+  );
+  assert.deepEqual(client.calls, [{ method: "GET", path: "/n8n/fetchSettings/instance" }]);
+});
+
+test("bot settings fill stored NULLs only with runtime-equivalent values and keep false/zero values", async () => {
+  const settings = tool("n8n", "settings_set");
+  const client = clientFor(storedN8nSettings());
+  await settings.handler(client, settings.inputSchema.parse({
+    expire: 0, keywordFinish: "#end", fallbackId: "new-bot", n8nIdFallback: "ignored-input",
   }));
-  assert.equal(result.expire, 0);
-  assert.equal(result.listeningFromMe, false);
-  assert.equal(result.stopBotFromMe, false);
-  assert.equal(result.debounceTime, 0);
-  assert.equal(result.keywordFinish, "bye");
-  assert.deepEqual(result.ignoreJids, ["@g.us"]);
-  assert.equal(result.fallbackId, "new-bot");
-  for (const key of ["id", "instanceId", "n8nIdFallback", "Fallback"]) assert.equal(key in result, false);
+  assert.deepEqual(client.calls, [
+    { method: "GET", path: "/n8n/fetchSettings/instance" },
+    {
+      method: "POST",
+      path: "/n8n/settings/instance",
+      body: {
+        expire: 0, keywordFinish: "#end", delayMessage: 1000, unknownMessage: "Sorry, I dont understand",
+        listeningFromMe: false, stopBotFromMe: false, keepOpen: true, debounceTime: 0, ignoreJids: [],
+        splitMessages: false, timePerChar: 0, fallbackId: "new-bot",
+      },
+    },
+  ]);
+});
+
+test("Typebot settings refuse to invent an unknown-message reply when the stored one is NULL", async () => {
+  const settings = tool("typebot", "settings_set");
+  const client = clientFor(storedTypebotSettings({ unknownMessage: null }));
+  await assert.rejects(
+    settings.handler(client, settings.inputSchema.parse({ expire: 5 })),
+    (err) => err instanceof ToolInputError && /unknownMessage/.test(err.message) &&
+      !/delayMessage|keywordFinish/.test(err.message),
+  );
+  assert.deepEqual(client.calls, [{ method: "GET", path: "/typebot/fetchSettings/instance" }]);
+});
+
+test("Typebot settings leave optional fields stored as NULL untouched", async () => {
+  const settings = tool("typebot", "settings_set");
+  const client = clientFor(storedTypebotSettings());
+  await settings.handler(client, settings.inputSchema.parse({ expire: 5 }));
+  assert.deepEqual(client.calls[1], {
+    method: "POST",
+    path: "/typebot/settings/instance",
+    body: {
+      expire: 5, keywordFinish: "bye", delayMessage: 1000, unknownMessage: "Not understood",
+      listeningFromMe: false, stopBotFromMe: false, keepOpen: false, splitMessages: false, timePerChar: 50,
+    },
+  });
+});
+
+test("never-saved bot settings still start from the server defaults", async (t) => {
+  const neverSaved = {
+    expire: 300, keywordFinish: "bye", delayMessage: 1000, unknownMessage: "Sorry, I dont understand",
+    listeningFromMe: true, stopBotFromMe: true, keepOpen: false, debounceTime: 1, ignoreJids: [],
+    splitMessages: false, timePerChar: 0, fallbackId: "", fallback: null,
+  };
+  for (const [label, current] of [["defaults without id", neverSaved], ["null", null]]) {
+    await t.test(label, async () => {
+      const settings = tool("n8n", "settings_set");
+      const client = clientFor(current);
+      await settings.handler(client, settings.inputSchema.parse({ expire: 0 }));
+      assert.deepEqual(client.calls[1], {
+        method: "POST",
+        path: "/n8n/settings/instance",
+        body: {
+          expire: 0, keywordFinish: "bye", delayMessage: 1000, unknownMessage: "Sorry, I dont understand",
+          listeningFromMe: true, stopBotFromMe: true, keepOpen: false, debounceTime: 1, ignoreJids: [],
+          splitMessages: false, timePerChar: 0,
+        },
+      });
+    });
+  }
 });
 
 test("OpenAI settings refuse a write when no existing or supplied credential can satisfy the API", async () => {

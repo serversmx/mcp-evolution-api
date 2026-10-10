@@ -40,6 +40,7 @@ export const typebotGroup = makeBotGroup(
     },
     requiredSpecific: ["url", "typebot"],
     settingsRequired: SETTINGS_REQUIRED_TYPEBOT,
+    sendsUnknownMessage: true,
   },
   [startTool],
 );

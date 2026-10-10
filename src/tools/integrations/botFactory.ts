@@ -89,6 +89,26 @@ const SETTINGS_DEFAULTS: Record<string, unknown> = {
   timePerChar: 0,
 };
 
+/**
+ * Stand-ins for required settings stored as NULL that behave exactly like NULL at runtime
+ * (Evolution API 2.3.7–develop): replies wait `delayMessage || 1000`, NULL and empty ignoreJids
+ * are skipped alike, emit only debounces when debounceTime > 0, and only Typebot reads
+ * unknownMessage. keywordFinish has none: NULL means "no finish keyword".
+ */
+const NULL_EQUIVALENT_SETTINGS: Record<string, unknown> = {
+  delayMessage: 1000,
+  unknownMessage: SETTINGS_DEFAULTS.unknownMessage,
+  debounceTime: 0,
+  ignoreJids: [],
+};
+
+/** fetchSettings answers the server defaults, without `id`, until the settings are saved once. */
+export function isSavedSettings(settings: unknown): boolean {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) return false;
+  const id = (settings as Record<string, unknown>).id;
+  return id !== undefined && id !== null;
+}
+
 /** Required settings fields, per the settings schema of each integration. */
 export const SETTINGS_REQUIRED_TYPEBOT = [
   "expire",
@@ -123,6 +143,8 @@ export interface BotSpec {
   settingsRequired: string[];
   /** Extra integration-specific settings fields (e.g. OpenAI openaiCredsId). */
   settingsExtraShape?: z.ZodRawShape;
+  /** The integration replies with unknownMessage at runtime (Typebot), so a stored NULL matters. */
+  sendsUnknownMessage?: boolean;
 }
 
 export function makeBotTools(spec: BotSpec): ToolDef[] {
@@ -146,6 +168,13 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
       ),
   };
   const settingsMergeKeys = [...BEHAVIOUR_KEYS, ...Object.keys(spec.settingsExtraShape ?? {})];
+  const nullEquivalents = { ...NULL_EQUIVALENT_SETTINGS };
+  if (spec.sendsUnknownMessage) delete nullEquivalents.unknownMessage;
+  const nullFilled = spec.settingsRequired
+    .filter((key) => key in nullEquivalents)
+    .map((key) => `${key} ${JSON.stringify(nullEquivalents[key])}`)
+    .join(", ");
+  const nullRefused = spec.sendsUnknownMessage ? "keywordFinish or unknownMessage" : "keywordFinish";
 
   return [
     {
@@ -237,8 +266,10 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
     {
       name: `evolution_${group}_settings_set`,
       description:
-        `Set the default ${label} settings for an instance. Partial updates are safe: missing required ` +
-        `fields are filled from the current settings (or the server defaults). Set the default bot with fallbackId.`,
+        `Set the default ${label} settings for an instance. Omitted fields keep their stored values ` +
+        `(server defaults if never saved). Required fields stored as NULL are only filled with values ` +
+        `that behave the same (${nullFilled}); a NULL ${nullRefused} must be passed explicitly. ` +
+        `Set the default bot with fallbackId.`,
       inputSchema: z.object({ instance: instanceField, ...settingsShape }),
       handler: async (client, args) => {
         const { instance, ...changes } = args;
@@ -246,11 +277,24 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
         let body = compact(changes);
         if (missingKeys(body, spec.settingsRequired).length > 0) {
           const current = await client.get(`/${base}/fetchSettings/${inst}`);
-          body = {
-            ...SETTINGS_DEFAULTS,
-            ...pickDefined(current, settingsMergeKeys),
-            ...body,
-          };
+          if (!isSavedSettings(current)) {
+            // Never saved: the server creates the row, so its documented defaults apply.
+            body = { ...SETTINGS_DEFAULTS, ...pickDefined(current, settingsMergeKeys), ...body };
+          } else {
+            // Stored row: a default for a NULL column would change live bots (keywordFinish
+            // 'bye' closes sessions on that word), so only runtime-equivalent values are used.
+            body = { ...pickDefined(current, settingsMergeKeys), ...body };
+            const unset = missingKeys(body, spec.settingsRequired);
+            const refused = unset.filter((key) => !(key in nullEquivalents));
+            if (refused.length > 0) {
+              throw new ToolInputError(
+                `Stored ${label} settings have no value for required field(s): ${refused.join(", ")}. ` +
+                  "Evolution requires a non-empty value and this tool will not invent one (a default " +
+                  "would change how live bots behave): pass the value(s) explicitly.",
+              );
+            }
+            for (const key of unset) body[key] = nullEquivalents[key];
+          }
         }
         const missing = missingKeys(body, spec.settingsRequired);
         if (missing.length > 0) {
