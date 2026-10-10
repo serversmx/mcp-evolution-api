@@ -4,13 +4,27 @@
 
 import { z } from "zod";
 import type { ToolDef, ToolGroup } from "../types.js";
+import { ToolInputError } from "../client.js";
 import { instanceField, numberField, messageKey, basicMessageKey } from "../schemas/common.js";
-import { postBody } from "./helpers.js";
+import { postBody, splitInstance } from "./helpers.js";
 
 const pageShape = {
   page: z.number().int().positive().optional().describe("1-based page number (default 1)."),
   offset: z.number().int().positive().optional().describe("Page size (default 50)."),
 };
+
+/**
+ * findMessages matches `key.remoteJid = X OR key.remoteJidAlt = Y` (only for the keys sent), and keys
+ * are stored as Baileys delivers them (an @lid chat keeps remoteJid=<lid>, remoteJidAlt=<phone>).
+ * Sending remoteJid as remoteJidAlt too makes a phone or @lid JID match both forms.
+ */
+function withAlternateJid(where: unknown): unknown {
+  if (!where || typeof where !== "object") return where;
+  const filters = where as { key?: Record<string, unknown> };
+  const key = filters.key;
+  if (!key?.remoteJid || key.remoteJidAlt !== undefined) return where;
+  return { ...filters, key: { ...key, remoteJidAlt: key.remoteJid } };
+}
 
 const lastMessageField = z.object({
   key: messageKey,
@@ -161,8 +175,16 @@ const tools: ToolDef[] = [
           pushName: z.string().optional().describe("Exact push name."),
         })
         .optional()
-        .describe("Filters. Omit to list all contacts."),
-      ...pageShape,
+        .describe("Filters. Omit to list all contacts, paginated."),
+      page: z.number().int().positive().optional().describe("1-based page number (default 1)."),
+      // Evolution has no default page size here (it returns every contact) and a page without
+      // offset makes it compute skip = NaN (HTTP 500), so offset is always sent.
+      offset: z
+        .number()
+        .int()
+        .positive()
+        .default(50)
+        .describe("Page size (default 50 in this tool; Evolution itself would return every contact)."),
     }),
     handler: async (client, args) => {
       const { instance, where, ...rest } = args;
@@ -180,8 +202,17 @@ const tools: ToolDef[] = [
           key: z
             .object({
               id: z.string().optional().describe("Message id."),
-              remoteJid: z.string().optional().describe("Chat JID (also matches the alternate @lid/phone JID)."),
-              remoteJidAlt: z.string().optional().describe("Alternate chat JID (@lid <-> phone)."),
+              remoteJid: z
+                .string()
+                .optional()
+                .describe(
+                  "Chat JID. Also sent as remoteJidAlt (unless you pass one), so messages stored under " +
+                    "the alternate @lid/phone JID match too.",
+                ),
+              remoteJidAlt: z
+                .string()
+                .optional()
+                .describe("Alternate chat JID (@lid <-> phone), matched against key.remoteJidAlt. Defaults to remoteJid."),
               fromMe: z.boolean().optional().describe("Only true is applied (false is ignored by the server)."),
               participant: z.string().optional().describe("Group sender JID."),
             })
@@ -191,7 +222,7 @@ const tools: ToolDef[] = [
           messageType: z
             .string()
             .optional()
-            .describe("e.g. conversation, extendedTextMessage, imageMessage, audioMessage."),
+            .describe("e.g. conversation (every text message), imageMessage, audioMessage, documentMessage."),
           source: z.string().optional().describe("android | ios | web | desktop | unknown."),
           messageTimestamp: z
             .object({
@@ -205,7 +236,10 @@ const tools: ToolDef[] = [
         .describe("Filters, e.g. { key: { remoteJid: '5215550123@s.whatsapp.net' } }."),
       ...pageShape,
     }),
-    handler: postBody("/chat/findMessages"),
+    handler: async (client, args) => {
+      const { inst, rest } = splitInstance(client, args);
+      return client.post(`/chat/findMessages/${inst}`, { body: { ...rest, where: withAlternateJid(rest.where) } });
+    },
   },
   {
     name: "evolution_chat_find_status",
@@ -270,14 +304,28 @@ const tools: ToolDef[] = [
   },
   {
     name: "evolution_chat_update_message",
-    description: "Edit a previously sent text message (or an image/video caption).",
+    description:
+      "Edit a previously sent text message (or an image/video caption). The edit goes to key.remoteJid: " +
+      "the JID the message is stored under (from the send response or evolution_chat_find_messages).",
     inputSchema: z.object({
       instance: instanceField,
-      number: numberField,
+      number: z
+        .string()
+        .optional()
+        .describe("Not needed: key.remoteJid is sent as number. Used only when key.remoteJid is empty."),
       key: basicMessageKey.describe("Key of the message to edit."),
       text: z.string().describe("New text content."),
     }),
-    handler: postBody("/chat/updateMessage"),
+    handler: async (client, args) => {
+      const { inst, rest } = splitInstance(client, args);
+      // Evolution compares createJid(number) with the stored key.remoteJid ('RemoteJid does not match'
+      // otherwise); createJid drops the MX/AR mobile digit of 13-digit numbers, so send the JID itself.
+      const number = (rest.key as { remoteJid?: string }).remoteJid || (rest.number as string | undefined);
+      if (!number) {
+        throw new ToolInputError("key.remoteJid is empty: pass the chat JID of the message to edit.");
+      }
+      return client.post(`/chat/updateMessage/${inst}`, { body: { ...rest, number } });
+    },
   },
   {
     name: "evolution_chat_get_poll_vote",

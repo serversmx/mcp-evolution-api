@@ -20,7 +20,10 @@ const tools: ToolDef[] = [
   },
   {
     name: "evolution_profile_fetch",
-    description: "Fetch the profile (name, status, picture) of a number. Omit number for the instance's own profile.",
+    description:
+      "Fetch a number's profile (name, status/about text, picture, business fields). With number omitted " +
+      "Evolution returns only wuid, numberExists, isBusiness and business fields: for the instance's own " +
+      "name and picture use evolution_instance_fetch (profileName, profilePicUrl).",
     inputSchema: z.object({ instance: instanceField, number: numberField.optional() }),
     handler: postBody("/chat/fetchProfile"),
   },
