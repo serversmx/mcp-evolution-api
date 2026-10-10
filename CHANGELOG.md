@@ -32,8 +32,13 @@ grupos, 72 activas por defecto.
   equivalentes hoy en ejecución (un `keywordFinish` NULL, y `unknownMessage` en
   Typebot, se envía como `""`). En Dify, n8n, EvoAI y Evolution Bot, donde
   Evolution rechaza `""` si todos los campos son obligatorios, reenvía el
-  `fallbackId` guardado (o `null` si no hay), sin cambiar el fallback.
+  `fallbackId` guardado (o `null` si no hay), sin cambiar el fallback; en
+  OpenAI usa `speechToText: false`. Los settings nunca guardados no se pueden
+  crear con `""` (la herramienta lo explica en vez del 400 de Evolution).
   `fallbackId: ""` se rechaza antes de llamar al API (daba HTTP 500).
+- `fallbackId` en el primer guardado se asigna con una segunda escritura,
+  porque Evolution no lo acepta al crear los settings (HTTP 500); en OpenAI
+  Evolution nunca puede guardarlo, así que la herramienta lo rechaza.
 - `chat_update_message` envía `key.remoteJid` como `number` (fallaba con números
   521…/549… escritos en dígitos).
 - `chat_find_messages` envía `remoteJid` también como `remoteJidAlt`: con el JID
@@ -82,7 +87,8 @@ grupos, 72 activas por defecto.
   y nunca borra la predeterminada de los settings.
 - `settings_set` de los bots envía un `keywordFinish` NULL como `""` en vez de
   `"bye"` y, en Dify, n8n, EvoAI y Evolution Bot, añade el `fallbackId` guardado
-  (o `null`); `fallbackId: ""` es inválido.
+  (o `null`); `fallbackId: ""` es inválido y OpenAI rechaza cualquier
+  `fallbackId`.
 - `chat_find_contacts` devuelve 50 contactos por defecto.
 - `chat_update_message`: `number` es opcional y se ignora si hay `key.remoteJid`.
 - `message_send_media` rechaza documentos sin extensión, `fileName` sin extensión

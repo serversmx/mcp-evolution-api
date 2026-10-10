@@ -131,6 +131,10 @@ export const openaiGroup = makeBotGroup(
       openaiCredsId: z.string().optional().describe("Default credential id for the instance (required)."),
       speechToText: z.boolean().optional().describe("Transcribe incoming audio with Whisper."),
     },
+    // settings() writes openaiIdFallback next to an OpenaiCreds relation connect: Prisma rejects it.
+    fallbackRejected: true,
+    // Every speechToText read is a truthiness check, so false behaves like a stored NULL.
+    emptyCarrier: { key: "speechToText", value: false },
   },
   extraTools,
 );

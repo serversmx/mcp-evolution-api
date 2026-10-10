@@ -303,9 +303,11 @@ Una vez conectado, puedes pedirle a Claude cosas como:
   `keywordFinish` NULL (y `unknownMessage` en Typebot) se envía como `""`, que
   Evolution acepta si la petición lleva algún campo opcional. En Dify, n8n, EvoAI
   y Evolution Bot todos los campos son obligatorios, así que la herramienta
-  reenvía el `fallbackId` guardado (o `null` si no hay): el fallback no cambia.
-  No inventa valores que cambien el comportamiento del bot, y `fallbackId: ""`
-  se rechaza antes de llamar al API.
+  reenvía el `fallbackId` guardado (o `null` si no hay): el fallback no cambia
+  (en OpenAI usa `speechToText: false`, equivalente en ejecución). Si esos
+  settings nunca se guardaron, Evolution no puede crearlos con `""`: guárdalos
+  una vez con un valor y luego vacíalo. No inventa valores que cambien el
+  comportamiento del bot, y `fallbackId: ""` se rechaza antes de llamar al API.
 - Los resultados se devuelven como JSON compacto. En un resultado mayor que
   `EVOLUTION_MAX_RESULT_BYTES`, los textos de más de 64 KiB se sustituyen por
   `<omitted: N bytes>` y un segundo bloque indica qué se omitió (p.ej.
@@ -370,7 +372,10 @@ Las herramientas de bots (`typebot`, `openai`, `dify`, `evolutionbot`, `flowise`
 (`enabled`, `triggerType`, `expire`, `keepOpen`, …) más los propios de cada bot
 (p.ej. `url`/`typebot`, `openaiCredsId`/`botType`, `webhookUrl`/`basicAuthPass`,
 `agentUrl`). El bot por defecto de los settings se indica con `fallbackId`
-(Dify y n8n lo guardan pero lo ignoran en ejecución en Evolution 2.3.7–develop).
+(Dify y n8n lo guardan pero lo ignoran en ejecución en Evolution 2.3.7–develop;
+OpenAI no puede guardarlo, Evolution falla con HTTP 500, así que la herramienta
+lo rechaza). En el primer guardado de los settings, la herramienta los crea y
+después asigna el `fallbackId`, porque Evolution no lo acepta al crearlos.
 
 ### Cambios incompatibles en 0.3.0
 
@@ -383,7 +388,8 @@ Las herramientas de bots (`typebot`, `openai`, `dify`, `evolutionbot`, `flowise`
   `force: true` y nunca borra la credencial predeterminada de los settings.
 - `settings_set` de los bots: un `keywordFinish` NULL se envía como `""` (sin
   inventar `"bye"`) y en Dify, n8n, EvoAI y Evolution Bot va acompañado del
-  `fallbackId` guardado o `null` (ver arriba); `fallbackId: ""` es inválido.
+  `fallbackId` guardado o `null` (ver arriba); `fallbackId: ""` es inválido y
+  OpenAI rechaza cualquier `fallbackId`.
 - `evolution_chat_find_contacts`: 50 contactos por defecto.
 - `evolution_chat_update_message`: `number` es opcional y se usa `key.remoteJid`.
 - `evolution_message_send_media`: valida `fileName`/`mimetype` antes de enviar.

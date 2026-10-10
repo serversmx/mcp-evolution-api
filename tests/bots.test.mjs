@@ -378,6 +378,69 @@ test("never-saved bot settings still start from the server defaults", async (t) 
   }
 });
 
+/** fetchSettings before the first save: server defaults, no id, fallbackId "". */
+function neverSavedSettings() {
+  return {
+    expire: 300, keywordFinish: "bye", delayMessage: 1000, unknownMessage: "Sorry, I dont understand",
+    listeningFromMe: true, stopBotFromMe: true, keepOpen: false, debounceTime: 1, ignoreJids: [],
+    splitMessages: false, timePerChar: 0, fallbackId: "", fallback: null,
+  };
+}
+
+test("never-saved settings cannot be created with an empty keywordFinish: refused before any write", async (t) => {
+  for (const [label, args] of [
+    ["keywordFinish only", { keywordFinish: "" }],
+    ["with a fallbackId", { keywordFinish: "", fallbackId: "bot-1" }],
+  ]) {
+    await t.test(label, async () => {
+      const settings = tool("n8n", "settings_set");
+      const client = clientFor(neverSavedSettings());
+      await assert.rejects(
+        settings.handler(client, settings.inputSchema.parse(args)),
+        (err) => err instanceof ToolInputError && /never saved/.test(err.message),
+      );
+      assert.deepEqual(client.calls, [{ method: "GET", path: "/n8n/fetchSettings/instance" }]);
+    });
+  }
+});
+
+test("a fallbackId on never-saved settings is set by an update after creating them", async () => {
+  const settings = tool("evoai", "settings_set");
+  const client = clientFor(neverSavedSettings());
+  await settings.handler(client, settings.inputSchema.parse({ fallbackId: "bot-1" }));
+  const defaults = {
+    expire: 300, keywordFinish: "bye", delayMessage: 1000, unknownMessage: "Sorry, I dont understand",
+    listeningFromMe: true, stopBotFromMe: true, keepOpen: false, debounceTime: 1, ignoreJids: [],
+    splitMessages: false, timePerChar: 0,
+  };
+  assert.deepEqual(client.calls, [
+    { method: "GET", path: "/evoai/fetchSettings/instance" },
+    { method: "POST", path: "/evoai/settings/instance", body: defaults },
+    { method: "POST", path: "/evoai/settings/instance", body: { ...defaults, fallbackId: "bot-1" } },
+  ]);
+});
+
+test("OpenAI keeps an empty keywordFinish accepted with speechToText false instead of a fallbackId", async () => {
+  const settings = tool("openai", "settings_set");
+  const client = clientFor(settingsWithNullBehaviour({
+    openaiIdFallback: null, openaiCredsId: "creds-1", splitMessages: null, timePerChar: null, speechToText: null,
+  }));
+  await settings.handler(client, settings.inputSchema.parse({ expire: 30 }));
+  assert.equal(client.calls[1].body.keywordFinish, "");
+  assert.equal(client.calls[1].body.speechToText, false);
+  assert.equal("fallbackId" in client.calls[1].body, false);
+});
+
+test("OpenAI settings refuse a fallbackId, which Evolution cannot store for OpenAI", async () => {
+  const settings = tool("openai", "settings_set");
+  const client = clientFor(settingsWithNullBehaviour({ openaiIdFallback: null, openaiCredsId: "creds-1" }));
+  await assert.rejects(
+    settings.handler(client, settings.inputSchema.parse({ fallbackId: "bot-1" })),
+    (err) => err instanceof ToolInputError && /fallbackId/.test(err.message) && /OpenAI/.test(err.message),
+  );
+  assert.equal(client.calls.length, 0);
+});
+
 test("OpenAI settings refuse a write when no existing or supplied credential can satisfy the API", async () => {
   const settings = tool("openai", "settings_set");
   const client = clientFor({ expire: 300 });
