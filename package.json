@@ -1,6 +1,6 @@
 {
   "name": "evolution-api-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MCP server for Evolution API v2 (WhatsApp) — messaging, management and integrations over stdio.",
   "type": "module",
   "repository": {
@@ -29,7 +29,7 @@
     "prepare": "npm run build"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "keywords": [
     "mcp",
@@ -40,9 +40,9 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^3.23.8",
-    "zod-to-json-schema": "^3.23.5"
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

@@ -16,8 +16,9 @@ export const instanceField = z
 export const numberField = z
   .string()
   .describe(
-    "Recipient phone number (digits with country code) or full JID " +
-      "(…@s.whatsapp.net, …@g.us, …@lid). Numbers not on WhatsApp are rejected with 400.",
+    "Recipient phone number (digits with country code) or full JID (…@s.whatsapp.net, …@g.us, …@lid; " +
+      "…@newsletter channels need Evolution API 2.4+, 2.3.7 rewrites them to @g.us). " +
+      "Numbers not on WhatsApp are rejected with 400.",
   );
 
 /** A WhatsApp message key, used to reference an existing message. */
@@ -52,7 +53,8 @@ export const delayField = z
   .nonnegative()
   .optional()
   .describe(
-    "Milliseconds of typing/recording presence before sending. The request blocks for this long.",
+    "Milliseconds of typing/recording presence before sending. The request blocks for this long; " +
+      "the MCP extends its HTTP timeout by the delay.",
   );
 
 /** Reply-to option. */
@@ -69,19 +71,25 @@ export const quotedField = z
       "if it is not stored the message is sent without the quote.",
   );
 
-/** Mention options (groups only). */
+/** Mention options (groups only). Evolution rejects an empty `mentioned` (minItems 1). */
 export const mentionsShape = {
   mentionsEveryOne: z.boolean().optional().describe("Groups only: mention all participants."),
   mentioned: z
     .array(z.string())
+    .min(1)
     .optional()
     .describe("Groups only: numbers/JIDs to mention, e.g. ['5215550123@s.whatsapp.net']."),
 };
 
-/** Optional send-time options common to most message endpoints. */
-export const sendOptionsShape = {
+/** Send options for messages whose mentions Evolution never applies (poll, sticker, buttons, carousel). */
+export const sendOptionsNoMentionsShape = {
   delay: delayField,
   quoted: quotedField,
+};
+
+/** Optional send-time options common to most message endpoints. */
+export const sendOptionsShape = {
+  ...sendOptionsNoMentionsShape,
   ...mentionsShape,
 };
 

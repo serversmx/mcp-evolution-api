@@ -7,6 +7,10 @@ export interface EvolutionConfig {
   apiKey: string;
   defaultInstance?: string;
   timeoutMs: number;
+  /** Largest incoming stdio message (bytes) before the transport rejects it. */
+  maxMessageBytes: number;
+  /** Largest serialized tool result (bytes) returned to the client. */
+  maxResultBytes: number;
   /** Raw allowlist string from EVOLUTION_TOOLS (parsed by the registry). */
   toolsAllowlist?: string;
 }
@@ -37,6 +41,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EvolutionConfi
     apiKey: apiKey!,
     defaultInstance: env.EVOLUTION_DEFAULT_INSTANCE?.trim() || undefined,
     timeoutMs,
+    maxMessageBytes: byteLimit(env, "EVOLUTION_MAX_MESSAGE_BYTES", 64 * 1024 * 1024),
+    maxResultBytes: byteLimit(env, "EVOLUTION_MAX_RESULT_BYTES", 4 * 1024 * 1024),
     toolsAllowlist: env.EVOLUTION_TOOLS?.trim() || undefined,
   };
+}
+
+/** Optional byte limit: digits only, so "64MB" fails loudly instead of meaning 64 bytes. */
+function byteLimit(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  const value = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer number of bytes, got: ${raw}`);
+  }
+  return value;
 }

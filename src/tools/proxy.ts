@@ -19,17 +19,25 @@ const tools: ToolDef[] = [
       host: z
         .string()
         .min(1)
+        .max(100)
         .describe("Proxy host. Required by the API even when disabling (send the current value or any placeholder)."),
       port: z.union([z.string(), z.number()]).describe("Proxy port."),
-      protocol: z.enum(["http", "https", "socks4", "socks5"]).describe("Proxy protocol."),
-      username: z.string().optional().describe("Proxy user."),
-      password: z.string().optional().describe("Proxy password."),
+      protocol: z.enum(["http", "socks5"]).describe("Proxy protocol (Evolution's proxy agent supports only these two)."),
+      username: z
+        .string()
+        .max(100)
+        .optional()
+        .describe("Proxy user. Omit username and password for a proxy without authentication."),
+      password: z.string().max(100).optional().describe("Proxy password."),
     }),
     handler: async (client, args) => {
-      const { instance, port, ...rest } = args;
+      const { instance, port, username, password, ...rest } = args;
       const inst = client.resolveInstance(instance as string | undefined);
-      // The API expects the port as a string.
-      return client.post(`/proxy/set/${inst}`, { body: compact({ ...rest, port: String(port) }) });
+      // The API expects the port as a string. Proxy.username/password are required columns: without
+      // them Evolution answers 201 but its unawaited upsert fails, so nothing is saved ("" = no auth).
+      return client.post(`/proxy/set/${inst}`, {
+        body: compact({ ...rest, port: String(port), username: username ?? "", password: password ?? "" }),
+      });
     },
   },
   {

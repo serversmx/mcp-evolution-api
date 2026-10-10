@@ -1,0 +1,32 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Wait a week before proposing a new release (security updates are not delayed).
+    cooldown:
+      default-days: 7
+    groups:
+      npm-minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # @types/node follows the engines floor (node >=22); bump both together.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/" # scans .github/workflows
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Dockerfile base image (FROM node:<major>-alpine). Dependabot proposes the
+  # newest <major>-alpine tag even when it is not an LTS line (odd majors such
+  # as 23 and 25 never were): check https://github.com/nodejs/Release first.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"

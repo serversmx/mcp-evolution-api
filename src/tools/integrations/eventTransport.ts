@@ -15,9 +15,11 @@ export interface EventTransportOptions {
   label: string;
   /** Server env flag that must be true, e.g. "RABBITMQ_ENABLED". */
   envFlag: string;
+  /** Extra sentence appended to the set description (e.g. another no-op condition). */
+  extraNote?: string;
 }
 
-export function makeEventTransportGroup({ base, label, envFlag }: EventTransportOptions): ToolGroup {
+export function makeEventTransportGroup({ base, label, envFlag, extraNote }: EventTransportOptions): ToolGroup {
   return {
     group: base,
     core: false,
@@ -27,7 +29,8 @@ export function makeEventTransportGroup({ base, label, envFlag }: EventTransport
         name: `evolution_${base}_set`,
         description:
           `Configure ${label} event publishing for an instance. Requires ${envFlag}=true on the server ` +
-          "(otherwise the call is a silent no-op with an empty response).",
+          "(otherwise the call is a silent no-op with an empty response)." +
+          (extraNote ? ` ${extraNote}` : ""),
         inputSchema: z.object({
           instance: instanceField,
           enabled: z.boolean().describe(`Enable or disable ${label} events.`),

@@ -4,17 +4,53 @@
 
 import { z } from "zod";
 import type { ToolDef, ToolGroup } from "../types.js";
+import { EvolutionApiError } from "../client.js";
 import { instanceField, eventsField } from "../schemas/common.js";
 import { compact } from "./helpers.js";
+
+interface InstanceFilters {
+  instanceName?: string;
+  instanceId?: string;
+  number?: string;
+}
+
+/**
+ * Re-apply 2.3.7's fetchInstances filter precedence (instanceId > number > instanceName) to the
+ * response. Evolution develop (#2549) strips instanceName/instanceId from the query, so the global key
+ * gets every instance with its secrets. A no-op when the server already filtered.
+ */
+function filterInstances(result: unknown, { instanceName, instanceId, number }: InstanceFilters): unknown {
+  if (!Array.isArray(result)) return result;
+  let field: "id" | "name";
+  let value: string;
+  if (instanceId) {
+    [field, value] = ["id", instanceId];
+  } else if (number) {
+    return result;
+  } else if (instanceName) {
+    [field, value] = ["name", instanceName];
+  } else {
+    return result;
+  }
+  const matches = result.filter(
+    (item) => item && typeof item === "object" && (item as Record<string, unknown>)[field] === value,
+  );
+  if (matches.length === 0) {
+    throw new EvolutionApiError(404, `Instance "${value}" not found`, null);
+  }
+  return matches;
+}
 
 const tools: ToolDef[] = [
   {
     name: "evolution_instance_create",
     description:
       "Create a new WhatsApp instance (requires the GLOBAL api key). The response `hash` is the " +
-      "instance token. Instance settings are flat top-level fields (rejectCall, msgCall, ...).",
+      "instance token. Instance settings are flat top-level fields (rejectCall, msgCall, ...). Evolution " +
+      "API develop builds with security fix #2549 (unreleased) reject every creation with HTTP 400 naming " +
+      "an *_instanceId_fkey foreign key (upstream bug; 2.3.7 and 2.4.0-rc2 work).",
     inputSchema: z.object({
-      instanceName: z.string().describe("Name for the new instance (becomes the path segment)."),
+      instanceName: z.string().trim().min(1).describe("Name for the new instance (becomes the path segment)."),
       integration: z
         .enum(["WHATSAPP-BAILEYS", "WHATSAPP-BUSINESS", "EVOLUTION"])
         .default("WHATSAPP-BAILEYS")
@@ -74,14 +110,15 @@ const tools: ToolDef[] = [
       instanceId: z.string().optional().describe("Filter by instance id."),
       number: z.string().optional().describe("Filter by stored number (global API key only)."),
     }),
-    handler: async (client, args) =>
-      client.get(`/instance/fetchInstances`, {
-        query: {
-          instanceName: args.instanceName as string | undefined,
-          instanceId: args.instanceId as string | undefined,
-          number: args.number as string | undefined,
-        },
-      }),
+    handler: async (client, args) => {
+      const filters: InstanceFilters = {
+        instanceName: args.instanceName as string | undefined,
+        instanceId: args.instanceId as string | undefined,
+        number: args.number as string | undefined,
+      };
+      const result = await client.get(`/instance/fetchInstances`, { query: { ...filters } });
+      return filterInstances(result, filters);
+    },
   },
   {
     name: "evolution_instance_connect",

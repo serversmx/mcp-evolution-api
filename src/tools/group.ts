@@ -10,6 +10,13 @@ import { instanceField } from "../schemas/common.js";
 
 const groupJidField = z.string().describe("Group JID, e.g. 1203630xxxxxxxxx@g.us");
 
+/**
+ * Body for POST/DELETE group routes that need no payload. The group validator reads body.groupJid first
+ * (same normalization as the query); on Evolution develop (Express 5) a bodyless request leaves req.body
+ * undefined and the validator crashes with HTTP 500.
+ */
+const groupJidBody = (args: Record<string, unknown>) => ({ groupJid: args.groupJid });
+
 const tools: ToolDef[] = [
   {
     name: "evolution_group_create",
@@ -95,6 +102,7 @@ const tools: ToolDef[] = [
       const inst = client.resolveInstance(args.instance as string | undefined);
       return client.post(`/group/revokeInviteCode/${inst}`, {
         query: { groupJid: args.groupJid as string },
+        body: groupJidBody(args),
       });
     },
   },
@@ -259,6 +267,7 @@ const tools: ToolDef[] = [
       const inst = client.resolveInstance(args.instance as string | undefined);
       return client.delete(`/group/leaveGroup/${inst}`, {
         query: { groupJid: args.groupJid as string },
+        body: groupJidBody(args),
       });
     },
   },

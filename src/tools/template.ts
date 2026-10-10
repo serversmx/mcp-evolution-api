@@ -4,6 +4,7 @@
 
 import { z } from "zod";
 import type { ToolDef, ToolGroup } from "../types.js";
+import { EvolutionApiError } from "../client.js";
 import { instanceField } from "../schemas/common.js";
 import { postBody } from "./helpers.js";
 
@@ -16,7 +17,10 @@ const componentsField = z
 const tools: ToolDef[] = [
   {
     name: "evolution_template_create",
-    description: `Create a Meta message template for approval.${cloudOnly}`,
+    description:
+      `Create a Meta message template for approval.${cloudOnly} A 400 "Unique constraint failed on the ` +
+      "fields: (`name`)\" means Meta DID accept it but Evolution could not store it (names are unique " +
+      "server-wide: a second language or another instance's name): check evolution_template_find, do not retry.",
     inputSchema: z.object({
       instance: instanceField,
       name: z.string().describe("Template name (lowercase, underscores)."),
@@ -61,7 +65,17 @@ const tools: ToolDef[] = [
     inputSchema: z.object({ instance: instanceField }),
     handler: async (client, args) => {
       const inst = client.resolveInstance(args.instance as string | undefined);
-      return client.get(`/template/find/${inst}`);
+      const templates = await client.get(`/template/find/${inst}`);
+      // When the Meta request fails Evolution answers an empty HTTP 200 (no templates is []).
+      if (templates === null || templates === undefined) {
+        throw new EvolutionApiError(
+          200,
+          "Evolution API returned an empty response: the Meta Graph request failed. Check the instance " +
+            "token (Meta access token) and businessId (WABA id) of this WHATSAPP-BUSINESS instance.",
+          templates,
+        );
+      }
+      return templates;
     },
   },
 ];

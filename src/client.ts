@@ -48,6 +48,9 @@ export class ToolInputError extends Error {
   }
 }
 
+/** Largest setTimeout delay; Node fires longer timers immediately. */
+const MAX_TIMER_MS = 2_147_483_647;
+
 /** URL-encode a single path segment (instance names, bot ids, ...). */
 export function seg(value: unknown): string {
   return encodeURIComponent(String(value));
@@ -103,6 +106,7 @@ export class EvolutionClient {
     };
 
     let bodyInit: string | FormData | undefined;
+    let delayMs = 0;
     if (opts.body !== undefined && method !== "GET") {
       if (opts.body instanceof FormData) {
         // fetch must generate the multipart boundary and Content-Type together.
@@ -110,11 +114,15 @@ export class EvolutionClient {
       } else {
         headers["Content-Type"] = "application/json";
         bodyInit = JSON.stringify(opts.body);
+        delayMs = bodyDelay(opts.body);
       }
     }
 
+    // Evolution sleeps `delay` ms inside the request (presence before a send),
+    // so the abort timer has to cover it on top of the configured timeout.
+    const timeoutMs = Math.min(this.config.timeoutMs + delayMs, MAX_TIMER_MS);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     let res: Response;
     let text: string;
@@ -129,7 +137,7 @@ export class EvolutionClient {
       text = await res.text();
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
-        throw new Error(`Request timed out after ${this.config.timeoutMs}ms: ${method} ${path}`);
+        throw new Error(timeoutMessage(method, path, this.config.timeoutMs, delayMs));
       }
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(`Network error calling Evolution API (${method} ${path}): ${reason}`);
@@ -143,7 +151,7 @@ export class EvolutionClient {
     const reportedError = parsed && typeof parsed === "object" &&
       (parsed as Record<string, unknown>).error === true;
     if (!res.ok || reportedError) {
-      throw buildApiError(res.status, parsed);
+      throw buildApiError(res.status, parsed, { method, path, hasBody: bodyInit !== undefined });
     }
 
     return parsed as T;
@@ -163,6 +171,33 @@ export class EvolutionClient {
   }
 }
 
+/** The `delay` (ms) of a plain JSON body, or 0 when absent or not a non-negative number. */
+function bodyDelay(body: unknown): number {
+  if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) return 0;
+  const delay = (body as Record<string, unknown>).delay;
+  return typeof delay === "number" && Number.isFinite(delay) && delay >= 0 ? delay : 0;
+}
+
+function timeoutMessage(method: HttpMethod, path: string, timeoutMs: number, delayMs: number): string {
+  const after = delayMs > 0
+    ? `${timeoutMs + delayMs}ms (timeout ${timeoutMs}ms + delay ${delayMs}ms)`
+    : `${timeoutMs}ms`;
+  let message = `Request timed out after ${after}: ${method} ${path}`;
+  if (method === "POST" && path.startsWith("/message/send")) {
+    message +=
+      ". The server may still deliver the message after this timeout: check (e.g. " +
+      "evolution_chat_find_messages) before retrying — Evolution API 2.3.7 ignores messageId, so a " +
+      "retry can send a duplicate.";
+  } else if (method === "POST" && path.startsWith("/typebot/start")) {
+    // Evolution answers only after the flow's opening messages are sent.
+    message +=
+      ". The flow may still be running on the server: check the chat (evolution_chat_find_messages) before " +
+      "retrying — with startSession (the default), a retry deletes that chat's bot sessions of every " +
+      "integration and restarts the flow.";
+  }
+  return message;
+}
+
 function safeJsonParse(text: string): unknown {
   try {
     return JSON.parse(text);
@@ -172,8 +207,15 @@ function safeJsonParse(text: string): unknown {
   }
 }
 
+/** The request that failed, for route-specific error hints. */
+interface FailedRequest {
+  method: HttpMethod;
+  path: string;
+  hasBody: boolean;
+}
+
 /** Map a non-2xx response to an EvolutionApiError with the most useful message. */
-function buildApiError(status: number, body: unknown): EvolutionApiError {
+function buildApiError(status: number, body: unknown, req: FailedRequest): EvolutionApiError {
   const obj = body && typeof body === "object" ? (body as Record<string, unknown>) : undefined;
 
   // 2.4+ license gate: every business route answers 503 until the server is activated.
@@ -188,6 +230,11 @@ function buildApiError(status: number, body: unknown): EvolutionApiError {
 
   let message = extractApiMessage(body, status);
 
+  // 2.3.7 stringifies its own exception objects (restart/connect/delete): the details are lost.
+  if (message === "[object Object]") {
+    message = objectObjectHint(req.path);
+  }
+
   // Express answers "Cannot POST /x" for routes it does not know: the endpoint is not
   // available in this server version (e.g. a 2.4-only route called on 2.3.7).
   if (status === 404 && /Cannot (GET|POST|PUT|DELETE) \//.test(message)) {
@@ -196,8 +243,59 @@ function buildApiError(status: number, body: unknown): EvolutionApiError {
       "Evolution API version, e.g. 2.4+)";
   }
 
+  // develop (Express 5 / body-parser 2): req.body stays undefined without a JSON body and
+  // groupValidate's Object.assign(body, ...) throws. 2.3.7/rc2 fetchAllGroups answers the same
+  // 500 when the instance has no WhatsApp client (Object.values(undefined), uncaught).
+  if (
+    status === 500 &&
+    !req.hasBody &&
+    req.path.startsWith("/group/") &&
+    message.includes("Cannot convert undefined or null to object")
+  ) {
+    message += req.path.startsWith("/group/fetchAllGroups/")
+      ? " (on Evolution API 2.3.7/2.4.0-rc2 this means the instance has no WhatsApp session loaded — " +
+        "disconnected when the server started, or never connected: check evolution_instance_connection_state " +
+        "and run evolution_instance_connect. On develop builds it is also the known Express 5 regression for " +
+        "group routes without a JSON body.)"
+      : " (known Evolution API develop/2.4 regression: Express 5 leaves the request body undefined on " +
+        "group routes that carry no JSON body; works on 2.3.7 and 2.4.0-rc2 — report it upstream)";
+  }
+
+  // develop after #2549: instanceName never reaches createInstance, so the first dependent
+  // upsert (Webhook/Setting) fails on its instanceId foreign key.
+  if (
+    status === 400 &&
+    req.method === "POST" &&
+    req.path === "/instance/create" &&
+    /instanceId_fkey|foreign key/i.test(message)
+  ) {
+    message +=
+      " (known Evolution API develop regression from security fix #2549: instanceName is stripped from " +
+      "the create body; use 2.3.7/2.4.0-rc2 or a build that includes upstream commit ebd7ab7)";
+  }
+
   const code = typeof obj?.code === "string" ? obj.code : undefined;
   return new EvolutionApiError(status, message, body, code);
+}
+
+/** Replacement for a detail-less '[object Object]' error, by route. */
+function objectObjectHint(path: string): string {
+  if (path.startsWith("/instance/restart/")) {
+    return "Evolution API could not restart the instance (it is probably closed or not loaded): use evolution_instance_connect.";
+  }
+  if (path.startsWith("/instance/connect/")) {
+    return (
+      "Evolution API failed to start the connection (details were lost server-side): check " +
+      "evolution_instance_connection_state and the server logs."
+    );
+  }
+  if (path.startsWith("/instance/delete/")) {
+    return (
+      "Evolution API 2.3.7 failed to log the instance out before deleting it: retry, or run " +
+      "evolution_instance_logout first."
+    );
+  }
+  return "Evolution API returned an error without details ('[object Object]').";
 }
 
 /**
