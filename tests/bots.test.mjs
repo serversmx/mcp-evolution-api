@@ -404,20 +404,68 @@ test("never-saved settings cannot be created with an empty keywordFinish: refuse
   }
 });
 
+/** Fake client answering GETs by path (unknown paths answer null) and failing chosen POSTs. */
+function routedClient(gets, failPostNumber) {
+  const calls = [];
+  let posts = 0;
+  return {
+    calls,
+    resolveInstance: () => "instance",
+    async get(path) {
+      calls.push({ method: "GET", path });
+      return path in gets ? gets[path] : null;
+    },
+    async post(path, { body }) {
+      calls.push({ method: "POST", path, body });
+      posts += 1;
+      if (posts === failPostNumber) throw new Error("socket hang up");
+      return body;
+    },
+  };
+}
+
+const NEVER_SAVED_DEFAULTS = {
+  expire: 300, keywordFinish: "bye", delayMessage: 1000, unknownMessage: "Sorry, I dont understand",
+  listeningFromMe: true, stopBotFromMe: true, keepOpen: false, debounceTime: 1, ignoreJids: [],
+  splitMessages: false, timePerChar: 0,
+};
+
 test("a fallbackId on never-saved settings is set by an update after creating them", async () => {
   const settings = tool("evoai", "settings_set");
-  const client = clientFor(neverSavedSettings());
+  const client = routedClient({
+    "/evoai/fetchSettings/instance": neverSavedSettings(),
+    "/evoai/fetch/bot-1/instance": { id: "bot-1", enabled: true },
+  });
   await settings.handler(client, settings.inputSchema.parse({ fallbackId: "bot-1" }));
-  const defaults = {
-    expire: 300, keywordFinish: "bye", delayMessage: 1000, unknownMessage: "Sorry, I dont understand",
-    listeningFromMe: true, stopBotFromMe: true, keepOpen: false, debounceTime: 1, ignoreJids: [],
-    splitMessages: false, timePerChar: 0,
-  };
   assert.deepEqual(client.calls, [
     { method: "GET", path: "/evoai/fetchSettings/instance" },
-    { method: "POST", path: "/evoai/settings/instance", body: defaults },
-    { method: "POST", path: "/evoai/settings/instance", body: { ...defaults, fallbackId: "bot-1" } },
+    { method: "GET", path: "/evoai/fetch/bot-1/instance" },
+    { method: "POST", path: "/evoai/settings/instance", body: NEVER_SAVED_DEFAULTS },
+    { method: "POST", path: "/evoai/settings/instance", body: { ...NEVER_SAVED_DEFAULTS, fallbackId: "bot-1" } },
   ]);
+});
+
+test("a never-saved fallbackId that is not a bot of the instance is refused before creating the settings", async () => {
+  const settings = tool("n8n", "settings_set");
+  const client = routedClient({ "/n8n/fetchSettings/instance": neverSavedSettings() });
+  await assert.rejects(
+    settings.handler(client, settings.inputSchema.parse({ fallbackId: "no-such-bot" })),
+    (err) => err instanceof ToolInputError && /no-such-bot/.test(err.message),
+  );
+  assert.equal(client.calls.some((call) => call.method === "POST"), false);
+});
+
+test("when setting the fallback fails after creating the settings, the error says to run the call again", async () => {
+  const settings = tool("evoai", "settings_set");
+  const client = routedClient({
+    "/evoai/fetchSettings/instance": neverSavedSettings(),
+    "/evoai/fetch/bot-1/instance": { id: "bot-1" },
+  }, 2);
+  await assert.rejects(
+    settings.handler(client, settings.inputSchema.parse({ fallbackId: "bot-1" })),
+    (err) => /socket hang up/.test(err.message) && /created without the fallback/.test(err.message) &&
+      /same call again/.test(err.message),
+  );
 });
 
 test("OpenAI keeps an empty keywordFinish accepted with speechToText false instead of a fallbackId", async () => {

@@ -11,7 +11,7 @@
 
 import { z } from "zod";
 import type { ToolDef, ToolGroup } from "../../types.js";
-import { ToolInputError, seg } from "../../client.js";
+import { EvolutionApiError, ToolInputError, seg } from "../../client.js";
 import { instanceField } from "../../schemas/common.js";
 import { compact, missingKeys, pickDefined } from "../helpers.js";
 
@@ -177,8 +177,8 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
   const requiredCreate = ["enabled", "triggerType", ...spec.requiredSpecific];
 
   const fallbackWarning = spec.fallbackRejected
-    ? `fallbackId cannot be set for ${label}: Evolution API 2.3.7–develop fails with HTTP 500 when ` +
-      "it stores one, so the tool refuses it."
+    ? `Evolution API 2.3.7–develop fails with HTTP 500 when its ${label} settings write carries a fallbackId ` +
+      "together with the credential (always sent by this tool), so the tool refuses fallbackId."
     : spec.fallbackIgnored
       ? `fallbackId is stored but ignored at runtime by Evolution API 2.3.7–develop for ${label} ` +
         "(no fallback bot ever answers): use a trigger-based bot instead."
@@ -192,7 +192,7 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
       .optional()
       .describe(
         spec.fallbackRejected
-          ? `Not supported for ${label}: ${fallbackWarning}`
+          ? `Not supported: ${fallbackWarning}`
           : fallbackWarning
             ? `Id of the ${label} bot stored as the default fallback; omit to keep the current one. WARNING: ` +
                 fallbackWarning
@@ -211,9 +211,12 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
   // A stored row always re-sends an optional column with a DB default (keepOpen, splitMessages,
   // timePerChar), unless every merged column is required (Dify, n8n, EvoAI, Evolution Bot).
   const storedHasOptional = settingsMergeKeys.some((key) => !spec.settingsRequired.includes(key));
-  const emptyNote = storedHasOptional
-    ? ""
-    : `. So that Evolution accepts "", the tool also re-sends the stored fallbackId (or null when there is ` +
+  const emptyNote = spec.emptyCarrier
+    ? `. So that Evolution accepts "", the tool may also send ${spec.emptyCarrier.key} ` +
+      `${JSON.stringify(spec.emptyCarrier.value)} (equivalent at runtime to a stored NULL)`
+    : storedHasOptional
+      ? ""
+      : `. So that Evolution accepts "", the tool also re-sends the stored fallbackId (or null when there is ` +
       `none), which leaves the fallback unchanged; settings never saved cannot be created with "" (save ` +
       `them once with a value, then clear it)`;
   // Evolution's isNotEmpty enforces minLength only when every key of the body is a required key.
@@ -320,10 +323,7 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
         const { instance, ...changes } = args;
         const inst = client.resolveInstance(instance as string | undefined);
         if (spec.fallbackRejected && changes.fallbackId !== undefined) {
-          throw new ToolInputError(
-            `Evolution API 2.3.7–develop cannot store fallbackId for ${label} (its settings write fails with ` +
-              "HTTP 500): omit fallbackId.",
-          );
+          throw new ToolInputError(`${fallbackWarning} Omit fallbackId.`);
         }
         let body = compact(changes);
         let saved = true;
@@ -360,14 +360,28 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
           const { fallbackId, ...create } = body;
           if (rejectsEmpty(create)) {
             throw new ToolInputError(
-              `${label} settings were never saved, and Evolution cannot create them with an empty ` +
-                `${spec.settingsRequired.filter((key) => create[key] === "").join(" or ")}: save them once with ` +
+              `${label} settings were never saved, and this tool cannot create them with an empty ` +
+                `${spec.settingsRequired.filter((key) => create[key] === "").join(" or ")} (Evolution rejects "" ` +
+                "when every field is required, and its create cannot carry a fallbackId): save them once with " +
                 'a value, then clear it with "".',
             );
           }
           if (fallbackId === undefined) return client.post(path, { body: create });
+          // An unknown bot would only fail the second write, after the first created the settings.
+          const bot = await client.get(`/${base}/fetch/${seg(fallbackId)}/${inst}`);
+          if (!bot || typeof bot !== "object") {
+            throw new ToolInputError(`fallbackId ${String(fallbackId)} is not a ${label} bot of this instance.`);
+          }
           await client.post(path, { body: create });
-          return client.post(path, { body });
+          try {
+            return await client.post(path, { body });
+          } catch (err) {
+            const note = " The settings were created without the fallback: run the same call again to set it.";
+            if (err instanceof EvolutionApiError) {
+              throw new EvolutionApiError(err.status, err.message + note, err.responseBody, err.code);
+            }
+            throw new Error((err instanceof Error ? err.message : String(err)) + note);
+          }
         }
         if (rejectsEmpty(body)) {
           if (spec.emptyCarrier) {

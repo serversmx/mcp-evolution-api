@@ -33,12 +33,15 @@ grupos, 72 activas por defecto.
   Typebot, se envía como `""`). En Dify, n8n, EvoAI y Evolution Bot, donde
   Evolution rechaza `""` si todos los campos son obligatorios, reenvía el
   `fallbackId` guardado (o `null` si no hay), sin cambiar el fallback; en
-  OpenAI usa `speechToText: false`. Los settings nunca guardados no se pueden
-  crear con `""` (la herramienta lo explica en vez del 400 de Evolution).
+  OpenAI usa `speechToText: false`. En Dify, n8n, EvoAI y Evolution Bot la
+  herramienta no puede crear con `""` settings nunca guardados y lo explica en
+  vez del 400 de Evolution.
   `fallbackId: ""` se rechaza antes de llamar al API (daba HTTP 500).
-- `fallbackId` en el primer guardado se asigna con una segunda escritura,
-  porque Evolution no lo acepta al crear los settings (HTTP 500); en OpenAI
-  Evolution nunca puede guardarlo, así que la herramienta lo rechaza.
+- `fallbackId` en el primer guardado se asigna con una segunda escritura
+  (antes se comprueba que el bot exista), porque Evolution no lo acepta al crear
+  los settings (HTTP 500). En OpenAI Evolution falla si la escritura lleva el
+  `fallbackId` junto con la credencial, que la herramienta siempre envía, así
+  que lo rechaza.
 - `chat_update_message` envía `key.remoteJid` como `number` (fallaba con números
   521…/549… escritos en dígitos).
 - `chat_find_messages` envía `remoteJid` también como `remoteJidAlt`: con el JID

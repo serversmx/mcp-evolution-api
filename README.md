@@ -304,9 +304,10 @@ Una vez conectado, puedes pedirle a Claude cosas como:
   Evolution acepta si la petición lleva algún campo opcional. En Dify, n8n, EvoAI
   y Evolution Bot todos los campos son obligatorios, así que la herramienta
   reenvía el `fallbackId` guardado (o `null` si no hay): el fallback no cambia
-  (en OpenAI usa `speechToText: false`, equivalente en ejecución). Si esos
-  settings nunca se guardaron, Evolution no puede crearlos con `""`: guárdalos
-  una vez con un valor y luego vacíalo. No inventa valores que cambien el
+  (en OpenAI usa `speechToText: false`, equivalente en ejecución). En Dify, n8n,
+  EvoAI y Evolution Bot, si los settings nunca se guardaron, la herramienta no
+  puede crearlos con `""` (Evolution lo rechaza y su creación no admite
+  `fallbackId`): guárdalos una vez con un valor y luego vacíalo. No inventa valores que cambien el
   comportamiento del bot, y `fallbackId: ""` se rechaza antes de llamar al API.
 - Los resultados se devuelven como JSON compacto. En un resultado mayor que
   `EVOLUTION_MAX_RESULT_BYTES`, los textos de más de 64 KiB se sustituyen por
@@ -373,9 +374,12 @@ Las herramientas de bots (`typebot`, `openai`, `dify`, `evolutionbot`, `flowise`
 (p.ej. `url`/`typebot`, `openaiCredsId`/`botType`, `webhookUrl`/`basicAuthPass`,
 `agentUrl`). El bot por defecto de los settings se indica con `fallbackId`
 (Dify y n8n lo guardan pero lo ignoran en ejecución en Evolution 2.3.7–develop;
-OpenAI no puede guardarlo, Evolution falla con HTTP 500, así que la herramienta
-lo rechaza). En el primer guardado de los settings, la herramienta los crea y
-después asigna el `fallbackId`, porque Evolution no lo acepta al crearlos.
+en OpenAI Evolution falla con HTTP 500 si la escritura lleva el `fallbackId`
+junto con la credencial, que esta herramienta siempre envía, así que lo
+rechaza). En el primer guardado de los settings, la herramienta comprueba que el
+bot exista, crea los settings y después asigna el `fallbackId`, porque Evolution
+no lo acepta al crearlos; si falla esa segunda escritura, basta con repetir la
+llamada.
 
 ### Cambios incompatibles en 0.3.0
 
