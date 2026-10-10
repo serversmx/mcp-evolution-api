@@ -81,6 +81,78 @@ test("timeout includes reading the response body", async () => {
   await assert.rejects(shortTimeout.get("/instance/connect/test"), /Request timed out after 25ms/);
 });
 
+/** fetch that answers after `ms`, or rejects like undici when the request is aborted first. */
+function slowFetch(ms) {
+  return async (_url, { signal }) => {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, ms);
+      signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(new DOMException("This operation was aborted", "AbortError"));
+      }, { once: true });
+    });
+    return new Response(JSON.stringify({ key: { id: "sent" } }), { status: 201 });
+  };
+}
+
+test("a send delay extends the request timeout by that delay", async () => {
+  mock.method(globalThis, "fetch", slowFetch(40));
+  const shortTimeout = new EvolutionClient({ ...config, timeoutMs: 25 });
+  assert.deepEqual(
+    await shortTimeout.post("/message/sendText/test", { body: { number: "1", text: "hi", delay: 50 } }),
+    { key: { id: "sent" } },
+  );
+  await assert.rejects(
+    shortTimeout.post("/message/sendText/test", { body: { number: "1", text: "hi" } }),
+    /Request timed out after 25ms/,
+  );
+});
+
+test("only a non-negative numeric delay extends the timeout", async () => {
+  const shortTimeout = new EvolutionClient({ ...config, timeoutMs: 25 });
+  mock.method(globalThis, "fetch", slowFetch(40));
+  await assert.rejects(
+    shortTimeout.post("/chat/sendPresence/test", { body: { number: "1", presence: "composing", delay: "50" } }),
+    /Request timed out after 25ms/,
+  );
+  mock.restoreAll();
+  mock.method(globalThis, "fetch", slowFetch(15));
+  assert.deepEqual(
+    await shortTimeout.post("/chat/sendPresence/test", { body: { number: "1", presence: "composing", delay: -20 } }),
+    { key: { id: "sent" } },
+  );
+});
+
+test("delays beyond the timer range wait instead of aborting at once", async () => {
+  mock.method(globalThis, "fetch", slowFetch(40));
+  const shortTimeout = new EvolutionClient({ ...config, timeoutMs: 25 });
+  assert.deepEqual(
+    await shortTimeout.post("/message/sendText/test", { body: { number: "1", text: "hi", delay: 3_000_000_000 } }),
+    { key: { id: "sent" } },
+  );
+});
+
+test("send timeouts report the effective timeout and warn that the message may still be delivered", async () => {
+  mock.method(globalThis, "fetch", slowFetch(1000));
+  const shortTimeout = new EvolutionClient({ ...config, timeoutMs: 25 });
+  await assert.rejects(
+    shortTimeout.post("/message/sendText/test", { body: { number: "1", text: "hi", delay: 10 } }),
+    (err) => {
+      assert.match(err.message, /^Request timed out after 35ms \(timeout 25ms \+ delay 10ms\): POST \/message\/sendText\/test\. /);
+      assert.match(err.message, /may still deliver the message/);
+      assert.match(err.message, /duplicate/);
+      return true;
+    },
+  );
+  await assert.rejects(
+    shortTimeout.post("/chat/sendPresence/test", { body: { number: "1", presence: "composing", delay: 10 } }),
+    (err) => {
+      assert.equal(err.message, "Request timed out after 35ms (timeout 25ms + delay 10ms): POST /chat/sendPresence/test");
+      return true;
+    },
+  );
+});
+
 test("credential verification withholds Facebook secrets", async () => {
   mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
     status: 200, message: "Credentials are valid", facebookAppId: "app-id",

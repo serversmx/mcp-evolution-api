@@ -48,6 +48,9 @@ export class ToolInputError extends Error {
   }
 }
 
+/** Largest setTimeout delay; Node fires longer timers immediately. */
+const MAX_TIMER_MS = 2_147_483_647;
+
 /** URL-encode a single path segment (instance names, bot ids, ...). */
 export function seg(value: unknown): string {
   return encodeURIComponent(String(value));
@@ -103,6 +106,7 @@ export class EvolutionClient {
     };
 
     let bodyInit: string | FormData | undefined;
+    let delayMs = 0;
     if (opts.body !== undefined && method !== "GET") {
       if (opts.body instanceof FormData) {
         // fetch must generate the multipart boundary and Content-Type together.
@@ -110,11 +114,15 @@ export class EvolutionClient {
       } else {
         headers["Content-Type"] = "application/json";
         bodyInit = JSON.stringify(opts.body);
+        delayMs = bodyDelay(opts.body);
       }
     }
 
+    // Evolution sleeps `delay` ms inside the request (presence before a send),
+    // so the abort timer has to cover it on top of the configured timeout.
+    const timeoutMs = Math.min(this.config.timeoutMs + delayMs, MAX_TIMER_MS);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.config.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     let res: Response;
     let text: string;
@@ -129,7 +137,7 @@ export class EvolutionClient {
       text = await res.text();
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
-        throw new Error(`Request timed out after ${this.config.timeoutMs}ms: ${method} ${path}`);
+        throw new Error(timeoutMessage(method, path, this.config.timeoutMs, delayMs));
       }
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(`Network error calling Evolution API (${method} ${path}): ${reason}`);
@@ -161,6 +169,27 @@ export class EvolutionClient {
     }
     return url.toString();
   }
+}
+
+/** The `delay` (ms) of a plain JSON body, or 0 when absent or not a non-negative number. */
+function bodyDelay(body: unknown): number {
+  if (!body || typeof body !== "object" || Object.getPrototypeOf(body) !== Object.prototype) return 0;
+  const delay = (body as Record<string, unknown>).delay;
+  return typeof delay === "number" && Number.isFinite(delay) && delay >= 0 ? delay : 0;
+}
+
+function timeoutMessage(method: HttpMethod, path: string, timeoutMs: number, delayMs: number): string {
+  const after = delayMs > 0
+    ? `${timeoutMs + delayMs}ms (timeout ${timeoutMs}ms + delay ${delayMs}ms)`
+    : `${timeoutMs}ms`;
+  let message = `Request timed out after ${after}: ${method} ${path}`;
+  if (method === "POST" && path.startsWith("/message/send")) {
+    message +=
+      ". The server may still deliver the message after this timeout: check (e.g. " +
+      "evolution_chat_find_messages) before retrying — Evolution API 2.3.7 ignores messageId, so a " +
+      "retry can send a duplicate.";
+  }
+  return message;
 }
 
 function safeJsonParse(text: string): unknown {
