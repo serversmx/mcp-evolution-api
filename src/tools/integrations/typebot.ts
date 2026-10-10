@@ -14,7 +14,11 @@ const startTool: ToolDef = {
   description:
     "Start a Typebot flow for one chat. Requires saved Typebot settings (evolution_typebot_settings_set). " +
     "It deletes that chat's bot sessions of EVERY integration on this instance, creates an enabled " +
-    "Typebot bot (no trigger) when none matches url+typebot, opens a session and emits TYPEBOT_CHANGE_STATUS.",
+    "Typebot bot (no trigger) when none matches url+typebot, opens a session and emits TYPEBOT_CHANGE_STATUS. " +
+    "The call returns only after the flow's first messages are sent (each text bubble waits about 1 s plus " +
+    "delayMessage; Wait blocks and media transfers add more), so long openings can exceed " +
+    "EVOLUTION_TIMEOUT_MS. After a timeout, check the chat (evolution_chat_find_messages) before retrying: " +
+    "a retry again deletes that chat's bot sessions of every integration and restarts the flow.",
   inputSchema: z.object({
     instance: instanceField,
     url: z.string().describe("Typebot base URL."),

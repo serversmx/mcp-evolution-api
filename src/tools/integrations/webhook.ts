@@ -24,7 +24,14 @@ const tools: ToolDef[] = [
         .optional()
         .describe("Extra HTTP headers sent on every delivery. Omit to keep the stored ones; {} clears them."),
       byEvents: z.boolean().optional().describe("Append /<event-name> to the URL path."),
-      base64: z.boolean().optional().describe("Include media base64 in message event payloads."),
+      base64: z
+        .boolean()
+        .optional()
+        .describe(
+          "Include media base64 in message event payloads. Evolution applies it after the instance " +
+            "reconnects (e.g. evolution_instance_restart), and media send responses then also carry " +
+            "the full base64.",
+        ),
       events: eventsField,
     }),
     handler: async (client, args) => {

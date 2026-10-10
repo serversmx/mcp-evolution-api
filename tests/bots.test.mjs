@@ -127,15 +127,81 @@ function storedTypebotSettings(overrides = {}) {
   };
 }
 
-test("bot settings refuse to invent a finish keyword when the stored one is NULL", async () => {
+/**
+ * fetchSettings of a stored row whose behaviour fields are NULL, as the first bot create leaves it
+ * (base createBot@2.3.7; OpenAI's own createBot seeds values instead): DB-defaulted fields are false/0.
+ */
+function settingsWithNullBehaviour(extra = {}) {
+  return {
+    id: "settings-3", expire: 0, keywordFinish: null, delayMessage: null, unknownMessage: null,
+    listeningFromMe: false, stopBotFromMe: false, keepOpen: false, debounceTime: null, ignoreJids: null,
+    splitMessages: false, timePerChar: 0, createdAt: "2026-10-01T12:00:00.000Z",
+    updatedAt: "2026-10-01T12:00:00.000Z", instanceId: "internal-instance-id", Fallback: null,
+    fallbackId: null, fallback: null, ...extra,
+  };
+}
+
+test("bot settings with only required fields refuse a NULL finish keyword and say how to keep it empty", async () => {
   const settings = tool("n8n", "settings_set");
   const client = clientFor(storedN8nSettings());
   await assert.rejects(
-    settings.handler(client, settings.inputSchema.parse({ expire: 0, fallbackId: "new-bot" })),
-    (err) => err instanceof ToolInputError && /keywordFinish/.test(err.message) &&
+    settings.handler(client, settings.inputSchema.parse({ expire: 0 })),
+    (err) => err instanceof ToolInputError && /keywordFinish/.test(err.message) && /fallbackId/.test(err.message) &&
       !/delayMessage|unknownMessage|debounceTime|ignoreJids/.test(err.message),
   );
   assert.deepEqual(client.calls, [{ method: "GET", path: "/n8n/fetchSettings/instance" }]);
+});
+
+test("bot settings send a NULL finish keyword as \"\" when fallbackId lets Evolution accept it", async (t) => {
+  await t.test("n8n", async () => {
+    const settings = tool("n8n", "settings_set");
+    const client = clientFor(storedN8nSettings());
+    await settings.handler(client, settings.inputSchema.parse({ expire: 0, fallbackId: "new-bot" }));
+    assert.deepEqual(client.calls[1], {
+      method: "POST",
+      path: "/n8n/settings/instance",
+      body: {
+        expire: 0, keywordFinish: "", delayMessage: 1000, unknownMessage: "Sorry, I dont understand",
+        listeningFromMe: false, stopBotFromMe: false, keepOpen: true, debounceTime: 0, ignoreJids: [],
+        splitMessages: false, timePerChar: 0, fallbackId: "new-bot",
+      },
+    });
+  });
+  await t.test("EvoAI", async () => {
+    const settings = tool("evoai", "settings_set");
+    const client = clientFor(settingsWithNullBehaviour({ evoaiIdFallback: null }));
+    await settings.handler(client, settings.inputSchema.parse({ fallbackId: "fallback-bot" }));
+    assert.deepEqual(client.calls[1], {
+      method: "POST",
+      path: "/evoai/settings/instance",
+      body: {
+        expire: 0, keywordFinish: "", delayMessage: 1000, unknownMessage: "Sorry, I dont understand",
+        listeningFromMe: false, stopBotFromMe: false, keepOpen: false, debounceTime: 0, ignoreJids: [],
+        splitMessages: false, timePerChar: 0, fallbackId: "fallback-bot",
+      },
+    });
+  });
+});
+
+test("settings_set descriptions ask for keywordFinish exactly where a NULL one is refused", async () => {
+  for (const [group, row, refused] of [
+    ["typebot", settingsWithNullBehaviour({ typebotIdFallback: null }), false],
+    ["openai", settingsWithNullBehaviour({ openaiIdFallback: null, openaiCredsId: "creds-1", speechToText: false }),
+      false],
+    ["flowise", settingsWithNullBehaviour({ flowiseIdFallback: null }), false],
+    ["dify", settingsWithNullBehaviour({ difyIdFallback: null }), true],
+    ["n8n", settingsWithNullBehaviour({ n8nIdFallback: null }), true],
+    ["evolutionbot", settingsWithNullBehaviour({ botIdFallback: null }), true],
+    ["evoai", settingsWithNullBehaviour({ evoaiIdFallback: null }), true],
+  ]) {
+    const settings = tool(group, "settings_set");
+    const outcome = await settings.handler(clientFor(row), settings.inputSchema.parse({ expire: 30 })).then(
+      () => "sent",
+      (err) => (err instanceof ToolInputError ? "refused" : err),
+    );
+    assert.equal(outcome, refused ? "refused" : "sent", `${group} settings_set`);
+    assert.equal(/keywordFinish must be passed/.test(settings.description), refused, `${group} description`);
+  }
 });
 
 test("bot settings fill stored NULLs only with runtime-equivalent values and keep false/zero values", async () => {
@@ -158,15 +224,33 @@ test("bot settings fill stored NULLs only with runtime-equivalent values and kee
   ]);
 });
 
-test("Typebot settings refuse to invent an unknown-message reply when the stored one is NULL", async () => {
-  const settings = tool("typebot", "settings_set");
-  const client = clientFor(storedTypebotSettings({ unknownMessage: null }));
-  await assert.rejects(
-    settings.handler(client, settings.inputSchema.parse({ expire: 5 })),
-    (err) => err instanceof ToolInputError && /unknownMessage/.test(err.message) &&
-      !/delayMessage|keywordFinish/.test(err.message),
-  );
-  assert.deepEqual(client.calls, [{ method: "GET", path: "/typebot/fetchSettings/instance" }]);
+test("Typebot settings send NULL keywordFinish/unknownMessage as \"\" instead of inventing values", async (t) => {
+  await t.test("row left by the first bot create", async () => {
+    const settings = tool("typebot", "settings_set");
+    const client = clientFor(settingsWithNullBehaviour({ typebotIdFallback: null }));
+    await settings.handler(client, settings.inputSchema.parse({ expire: 30 }));
+    assert.deepEqual(client.calls[1], {
+      method: "POST",
+      path: "/typebot/settings/instance",
+      body: {
+        expire: 30, keywordFinish: "", delayMessage: 1000, unknownMessage: "",
+        listeningFromMe: false, stopBotFromMe: false, keepOpen: false, splitMessages: false, timePerChar: 0,
+      },
+    });
+  });
+  await t.test("only unknownMessage NULL", async () => {
+    const settings = tool("typebot", "settings_set");
+    const client = clientFor(storedTypebotSettings({ unknownMessage: null }));
+    await settings.handler(client, settings.inputSchema.parse({ expire: 5 }));
+    assert.deepEqual(client.calls[1], {
+      method: "POST",
+      path: "/typebot/settings/instance",
+      body: {
+        expire: 5, keywordFinish: "bye", delayMessage: 1000, unknownMessage: "",
+        listeningFromMe: false, stopBotFromMe: false, keepOpen: false, splitMessages: false, timePerChar: 50,
+      },
+    });
+  });
 });
 
 test("Typebot settings leave optional fields stored as NULL untouched", async () => {

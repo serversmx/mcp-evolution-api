@@ -93,10 +93,10 @@ const SETTINGS_DEFAULTS: Record<string, unknown> = {
 };
 
 /**
- * Stand-ins for required settings stored as NULL that behave exactly like NULL at runtime
+ * Stand-ins for required settings stored as NULL that behave like NULL at runtime today
  * (Evolution API 2.3.7–develop): replies wait `delayMessage || 1000`, NULL and empty ignoreJids
  * are skipped alike, emit only debounces when debounceTime > 0, and only Typebot reads
- * unknownMessage. keywordFinish has none: NULL means "no finish keyword".
+ * unknownMessage. Bots created later copy these values instead of inheriting the settings.
  */
 const NULL_EQUIVALENT_SETTINGS: Record<string, unknown> = {
   delayMessage: 1000,
@@ -104,6 +104,22 @@ const NULL_EQUIVALENT_SETTINGS: Record<string, unknown> = {
   debounceTime: 0,
   ignoreJids: [],
 };
+
+/**
+ * What a NULL means for the required strings that have no stand-in above (keywordFinish, and
+ * unknownMessage on Typebot). They are sent as "", which every service reads like NULL today
+ * (`keywordFinish || ''`, `if (unknownMessage)`), but Evolution's isNotEmpty enforces minLength
+ * when every body key is a required key, so "" is only accepted once the body has an optional field.
+ */
+const NULL_MEANING: Record<string, string> = {
+  keywordFinish: "no finish keyword today; any value you pass becomes a keyword that closes the session",
+  unknownMessage: "no reply to unsupported messages today; any value you pass is sent as that reply",
+};
+
+/** "a, b or c". */
+function orList(items: string[]): string {
+  return items.length > 1 ? `${items.slice(0, -1).join(", ")} or ${items[items.length - 1]}` : items.join("");
+}
 
 /** fetchSettings answers the server defaults, without `id`, until the settings are saved once. */
 export function isSavedSettings(settings: unknown): boolean {
@@ -180,11 +196,22 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
   const settingsMergeKeys = [...BEHAVIOUR_KEYS, ...Object.keys(spec.settingsExtraShape ?? {})];
   const nullEquivalents = { ...NULL_EQUIVALENT_SETTINGS };
   if (spec.sendsUnknownMessage) delete nullEquivalents.unknownMessage;
+  // Required strings whose NULL can only be kept as "" (when Evolution accepts it).
+  const emptyKeys = spec.settingsRequired.filter((key) => key in NULL_MEANING && !(key in nullEquivalents));
+  const optionalKeys = Object.keys(settingsShape).filter((key) => !spec.settingsRequired.includes(key));
+  // A stored row always re-sends an optional column with a DB default (keepOpen, splitMessages,
+  // timePerChar), unless every merged column is required (Dify, n8n, EvoAI, Evolution Bot).
+  const storedHasOptional = settingsMergeKeys.some((key) => !spec.settingsRequired.includes(key));
+  const nullFills: Record<string, unknown> = { ...nullEquivalents };
+  if (storedHasOptional) for (const key of emptyKeys) nullFills[key] = "";
   const nullFilled = spec.settingsRequired
-    .filter((key) => key in nullEquivalents)
-    .map((key) => `${key} ${JSON.stringify(nullEquivalents[key])}`)
+    .filter((key) => key in nullFills)
+    .map((key) => `${key} ${JSON.stringify(nullFills[key])}`)
     .join(", ");
-  const nullRefused = spec.sendsUnknownMessage ? "keywordFinish or unknownMessage" : "keywordFinish";
+  const nullRefused = storedHasOptional
+    ? ""
+    : `; a NULL ${orList(emptyKeys)} must be passed explicitly unless you also send ` +
+      `${orList(optionalKeys)} (then it is sent as "")`;
 
   return [
     {
@@ -278,7 +305,7 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
       description:
         `Set the default ${label} settings for an instance. Omitted fields keep their stored values ` +
         `(server defaults if never saved). Required fields stored as NULL are only filled with values ` +
-        `that behave the same (${nullFilled}); a NULL ${nullRefused} must be passed explicitly. ` +
+        `that are runtime-equivalent today (${nullFilled})${nullRefused}. ` +
         (fallbackWarning || "Set the default bot with fallbackId."),
       inputSchema: z.object({ instance: instanceField, ...settingsShape }),
       handler: async (client, args) => {
@@ -294,16 +321,23 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
             // Stored row: a default for a NULL column would change live bots (keywordFinish
             // 'bye' closes sessions on that word), so only runtime-equivalent values are used.
             body = { ...pickDefined(current, settingsMergeKeys), ...body };
+            // Evolution rejects "" only when every key of the body is a required key.
+            const acceptsEmpty = Object.keys(body).some((key) => !spec.settingsRequired.includes(key));
             const unset = missingKeys(body, spec.settingsRequired);
-            const refused = unset.filter((key) => !(key in nullEquivalents));
-            if (refused.length > 0) {
+            const blank = unset.filter((key) => emptyKeys.includes(key));
+            if (blank.length > 0 && !acceptsEmpty) {
               throw new ToolInputError(
-                `Stored ${label} settings have no value for required field(s): ${refused.join(", ")}. ` +
-                  "Evolution requires a non-empty value and this tool will not invent one (a default " +
-                  "would change how live bots behave): pass the value(s) explicitly.",
+                `Stored ${label} settings have ` +
+                  blank.map((key) => `${key} NULL (${NULL_MEANING[key]})`).join(" and ") +
+                  `. Evolution rejects "" in this request because every field in it is required. To keep ` +
+                  `${blank.length > 1 ? "them" : "it"} empty, also pass ${orList(optionalKeys)} (re-sending ` +
+                  `the current one from evolution_${group}_settings_fetch changes nothing).`,
               );
             }
-            for (const key of unset) body[key] = nullEquivalents[key];
+            for (const key of unset) {
+              if (key in nullEquivalents) body[key] = nullEquivalents[key];
+              else if (blank.includes(key)) body[key] = "";
+            }
           }
         }
         const missing = missingKeys(body, spec.settingsRequired);
