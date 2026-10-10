@@ -38,45 +38,47 @@ function mockEvolution(t, body, status = 200) {
   return requests;
 }
 
+const labels = [{ id: "1", name: "New customer", color: 1, predefinedId: "1" }];
+
 test("tool calls hit the Evolution endpoint and return its response as text content", async (t) => {
-  const requests = mockEvolution(t, { instance: { instanceName: "main", state: "open" } });
+  const requests = mockEvolution(t, labels);
   const client = await connect(t);
-  const result = await client.callTool({ name: "evolution_instance_connection_state", arguments: {} });
+  const result = await client.callTool({ name: "evolution_label_find", arguments: {} });
   assert.deepEqual(requests, [
-    { url: "https://evolution.test/instance/connectionState/main", method: "GET", body: undefined },
+    { url: "https://evolution.test/label/findLabels/main", method: "GET", body: undefined },
   ]);
   assert.equal(result.isError, undefined);
   assert.equal(result.content.length, 1);
   assert.equal(result.content[0].type, "text");
-  assert.deepEqual(JSON.parse(result.content[0].text), { instance: { instanceName: "main", state: "open" } });
+  assert.deepEqual(JSON.parse(result.content[0].text), labels);
 });
 
 test("successful results are compact JSON; text passes through and empty bodies become null", async (t) => {
   const responses = [
-    new Response(JSON.stringify({ instance: { instanceName: "main", state: "open" } })),
+    new Response(JSON.stringify(labels)),
     new Response("plain text reply"),
     new Response(null, { status: 204 }),
   ];
   t.mock.method(globalThis, "fetch", async () => responses.shift());
   const client = await connect(t);
-  const call = () => client.callTool({ name: "evolution_instance_connection_state", arguments: {} });
+  const call = () => client.callTool({ name: "evolution_label_find", arguments: {} });
   assert.deepEqual(await call(), {
-    content: [{ type: "text", text: '{"instance":{"instanceName":"main","state":"open"}}' }],
+    content: [{ type: "text", text: '[{"id":"1","name":"New customer","color":1,"predefinedId":"1"}]' }],
   });
   assert.deepEqual(await call(), { content: [{ type: "text", text: "plain text reply" }] });
   assert.deepEqual(await call(), { content: [{ type: "text", text: "null" }] });
 });
 
 test("results are measured in UTF-8 bytes and a result exactly at the limit is returned", async (t) => {
-  mockEvolution(t, { caption: "ñ".repeat(10) }); // {"caption":"ññññññññññ"}: 24 chars, 34 bytes
-  const atLimit = await connect(t, { maxResultBytes: 34 });
-  assert.deepEqual(await atLimit.callTool({ name: "evolution_instance_connection_state", arguments: {} }), {
-    content: [{ type: "text", text: '{"caption":"ññññññññññ"}' }],
+  mockEvolution(t, [{ id: "1", name: "ñ".repeat(10) }]); // [{"id":"1","name":"ññññññññññ"}]: 32 chars, 42 bytes
+  const atLimit = await connect(t, { maxResultBytes: 42 });
+  assert.deepEqual(await atLimit.callTool({ name: "evolution_label_find", arguments: {} }), {
+    content: [{ type: "text", text: '[{"id":"1","name":"ññññññññññ"}]' }],
   });
-  const overLimit = await connect(t, { maxResultBytes: 33 });
-  const result = await overLimit.callTool({ name: "evolution_instance_connection_state", arguments: {} });
+  const overLimit = await connect(t, { maxResultBytes: 41 });
+  const result = await overLimit.callTool({ name: "evolution_label_find", arguments: {} });
   assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /^Result too large: 34 bytes exceeds EVOLUTION_MAX_RESULT_BYTES=33\. /);
+  assert.match(result.content[0].text, /^Result too large: 42 bytes exceeds EVOLUTION_MAX_RESULT_BYTES=41\. /);
 });
 
 test("oversized media is withheld with its size, a summary and download guidance", async (t) => {
@@ -110,16 +112,11 @@ test("oversized media is withheld with its size, a summary and download guidance
 });
 
 test("oversized lists report their length and suggest narrowing instead of media guidance", async (t) => {
-  const chats = Array.from({ length: 50 }, (_, i) => ({
-    id: `chat-${i}`,
-    remoteJid: `5215550000${String(i).padStart(3, "0")}@s.whatsapp.net`,
-    pushName: "Contact",
-    profilePicUrl: null,
-    unreadCount: 0,
-  }));
-  mockEvolution(t, chats);
+  mockEvolution(t, Array.from({ length: 50 }, (_, i) => ({
+    id: String(i), name: `Label ${i}`, color: i % 20, predefinedId: null,
+  })));
   const client = await connect(t, { maxResultBytes: 1024 });
-  const result = await client.callTool({ name: "evolution_chat_find_chats", arguments: {} });
+  const result = await client.callTool({ name: "evolution_label_find", arguments: {} });
   assert.equal(result.isError, true);
   const [{ text }] = result.content;
   assert.match(text, /^Result too large: \d+ bytes exceeds EVOLUTION_MAX_RESULT_BYTES=1024\. Array of 50 items\. /);
@@ -130,7 +127,7 @@ test("oversized lists report their length and suggest narrowing instead of media
 test("the oversize summary lists at most 20 top-level keys", async (t) => {
   mockEvolution(t, Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`k${i}`, "x".repeat(100)])));
   const client = await connect(t, { maxResultBytes: 1024 });
-  const result = await client.callTool({ name: "evolution_instance_connection_state", arguments: {} });
+  const result = await client.callTool({ name: "evolution_label_find", arguments: {} });
   assert.equal(result.isError, true);
   assert.match(
     result.content[0].text,
@@ -139,30 +136,30 @@ test("the oversize summary lists at most 20 top-level keys", async (t) => {
 });
 
 test("unknown tools, invalid arguments and API errors become isError results", async (t) => {
-  const requests = mockEvolution(t, { status: 400, error: "Bad Request", response: { message: ["number is required"] } }, 400);
+  const requests = mockEvolution(t, { status: 400, error: "Bad Request", response: { message: ["labelId is required"] } }, 400);
   const client = await connect(t);
   assert.deepEqual(await client.callTool({ name: "evolution_nope", arguments: {} }), {
     content: [{ type: "text", text: "Unknown tool: evolution_nope" }],
     isError: true,
   });
-  assert.deepEqual(await client.callTool({ name: "evolution_message_send_text", arguments: { number: "1" } }), {
-    content: [{ type: "text", text: "Invalid arguments: text: Required" }],
+  assert.deepEqual(await client.callTool({ name: "evolution_label_handle", arguments: { number: "1", labelId: "5" } }), {
+    content: [{ type: "text", text: "Invalid arguments: action: Required" }],
     isError: true,
   });
   assert.equal(requests.length, 0, "invalid arguments never reach the API");
   assert.deepEqual(
-    await client.callTool({ name: "evolution_message_send_text", arguments: { number: "1", text: "hi" } }),
-    { content: [{ type: "text", text: "Evolution API error (HTTP 400): number is required" }], isError: true },
+    await client.callTool({ name: "evolution_label_handle", arguments: { number: "1", labelId: "5", action: "add" } }),
+    { content: [{ type: "text", text: "Evolution API error (HTTP 400): labelId is required" }], isError: true },
   );
 });
 
 test("tools/list exposes each enabled tool with its JSON input schema", async (t) => {
-  const client = await connect(t, { toolsAllowlist: "message" });
+  const client = await connect(t, { toolsAllowlist: "label" });
   const { tools } = await client.listTools();
-  const sendText = tools.find((tool) => tool.name === "evolution_message_send_text");
-  assert.equal(sendText.inputSchema.type, "object");
-  assert.deepEqual(sendText.inputSchema.required, ["number", "text"]);
-  assert.equal(tools.some((tool) => tool.name === "evolution_chat_find_chats"), false, "chat group not enabled");
+  const handle = tools.find((tool) => tool.name === "evolution_label_handle");
+  assert.equal(handle.inputSchema.type, "object");
+  assert.deepEqual(handle.inputSchema.required, ["number", "labelId", "action"]);
+  assert.equal(tools.some((tool) => tool.name === "evolution_message_send_text"), false, "message group not enabled");
 });
 
 test("size limits default to 64 MiB per incoming message and 4 MiB per tool result", () => {
@@ -193,7 +190,7 @@ test("size limits reject values that are not positive integers instead of trunca
   }
 });
 
-test("an incoming message over EVOLUTION_MAX_MESSAGE_BYTES is logged as a transport error", { timeout: 10000 }, async () => {
+test("an incoming message over EVOLUTION_MAX_MESSAGE_BYTES is logged as a transport error", { timeout: 10000 }, async (t) => {
   // Port 9 (discard) refuses connections: no Evolution instance is ever contacted.
   const child = spawn(process.execPath, [entry], {
     env: {
@@ -205,6 +202,7 @@ test("an incoming message over EVOLUTION_MAX_MESSAGE_BYTES is logged as a transp
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
+  t.after(() => child.kill());
   let stderr = "";
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => { stderr += chunk; });
@@ -223,5 +221,6 @@ test("an incoming message over EVOLUTION_MAX_MESSAGE_BYTES is logged as a transp
   child.stdin.end(`${JSON.stringify(call)}\n`);
   await exited;
 
-  assert.match(stderr, /\[evolution-api-mcp\] transport error: ReadBuffer exceeded maximum size of 4096 bytes/);
+  // The SDK's message names the configured limit.
+  assert.match(stderr, /\[evolution-api-mcp\] transport error: .*\b4096\b/);
 });
