@@ -161,3 +161,20 @@ test("openai_creds_delete never deletes when a safety read fails", async (t) => 
     });
   }
 });
+
+test("only Dify and n8n warn that fallbackId is ignored at runtime", () => {
+  for (const group of ["typebot", "openai", "dify", "flowise", "n8n", "evolutionbot", "evoai"]) {
+    const settings = tool(`evolution_${group}_settings_set`);
+    const ignored = group === "dify" || group === "n8n";
+    assert.equal(/\bignored\b/i.test(settings.description), ignored, `${group} settings_set description`);
+    assert.equal(/\bignored\b/i.test(settings.inputSchema.shape.fallbackId.description), ignored,
+      `${group} fallbackId description`);
+  }
+});
+
+test("only sqs_set warns that SQS global mode makes it a no-op", () => {
+  for (const group of ["websocket", "rabbitmq", "sqs", "nats", "kafka"]) {
+    const set = tool(`evolution_${group}_set`);
+    assert.equal(/SQS_GLOBAL_ENABLED/.test(set.description), group === "sqs", `${group}_set description`);
+  }
+});

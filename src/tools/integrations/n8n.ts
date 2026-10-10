@@ -20,4 +20,5 @@ export const n8nGroup = makeBotGroup({
   },
   requiredSpecific: ["webhookUrl"],
   settingsRequired: SETTINGS_REQUIRED_FULL,
+  fallbackIgnored: true,
 });

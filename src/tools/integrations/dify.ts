@@ -17,4 +17,5 @@ export const difyGroup = makeBotGroup({
   },
   requiredSpecific: ["botType"],
   settingsRequired: SETTINGS_REQUIRED_FULL,
+  fallbackIgnored: true,
 });

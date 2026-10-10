@@ -145,6 +145,8 @@ export interface BotSpec {
   settingsExtraShape?: z.ZodRawShape;
   /** The integration replies with unknownMessage at runtime (Typebot), so a stored NULL matters. */
   sendsUnknownMessage?: boolean;
+  /** Evolution stores fallbackId but never reads it at runtime (Dify, n8n: wrong column name). */
+  fallbackIgnored?: boolean;
 }
 
 export function makeBotTools(spec: BotSpec): ToolDef[] {
@@ -156,6 +158,10 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
   const botKeys = Object.keys(createShape);
   const requiredCreate = ["enabled", "triggerType", ...spec.requiredSpecific];
 
+  const fallbackWarning = spec.fallbackIgnored
+    ? `fallbackId is stored but ignored at runtime by Evolution API 2.3.7–develop for ${label} ` +
+      "(no fallback bot ever answers): use a trigger-based bot instead."
+    : "";
   const settingsShape = {
     ...behaviourShape,
     ...(spec.settingsExtraShape ?? {}),
@@ -164,7 +170,8 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
       .optional()
       .describe(
         "Id of the default bot used when no trigger matches (the only fallback field the server reads). " +
-          "Omit to keep the current one.",
+          "Omit to keep the current one." +
+          (fallbackWarning ? ` WARNING: ${fallbackWarning}` : ""),
       ),
   };
   const settingsMergeKeys = [...BEHAVIOUR_KEYS, ...Object.keys(spec.settingsExtraShape ?? {})];
@@ -269,7 +276,7 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
         `Set the default ${label} settings for an instance. Omitted fields keep their stored values ` +
         `(server defaults if never saved). Required fields stored as NULL are only filled with values ` +
         `that behave the same (${nullFilled}); a NULL ${nullRefused} must be passed explicitly. ` +
-        `Set the default bot with fallbackId.`,
+        (fallbackWarning || "Set the default bot with fallbackId."),
       inputSchema: z.object({ instance: instanceField, ...settingsShape }),
       handler: async (client, args) => {
         const { instance, ...changes } = args;
