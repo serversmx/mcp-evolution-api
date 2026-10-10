@@ -4,13 +4,17 @@
 
 import { z } from "zod";
 import type { ToolDef } from "../../types.js";
+import { ToolInputError } from "../../client.js";
 import { instanceField } from "../../schemas/common.js";
-import { postBody } from "../helpers.js";
-import { makeBotGroup, SETTINGS_REQUIRED_TYPEBOT } from "./botFactory.js";
+import { splitInstance } from "../helpers.js";
+import { isSavedSettings, makeBotGroup, SETTINGS_REQUIRED_TYPEBOT } from "./botFactory.js";
 
 const startTool: ToolDef = {
   name: "evolution_typebot_start",
-  description: "Start a Typebot flow for a specific chat (emits TYPEBOT_START).",
+  description:
+    "Start a Typebot flow for one chat. Requires saved Typebot settings (evolution_typebot_settings_set). " +
+    "It deletes that chat's bot sessions of EVERY integration on this instance, creates an enabled " +
+    "Typebot bot (no trigger) when none matches url+typebot, opens a session and emits TYPEBOT_CHANGE_STATUS.",
   inputSchema: z.object({
     instance: instanceField,
     url: z.string().describe("Typebot base URL."),
@@ -18,14 +22,27 @@ const startTool: ToolDef = {
     remoteJid: z.string().describe("Target chat JID."),
     startSession: z
       .boolean()
-      .optional()
-      .describe("true: create/replace a persistent session; false: fire the flow once."),
+      .default(true)
+      .describe(
+        "Keep true (default). false is broken in Evolution API 2.3.7–develop: nothing is delivered, " +
+          "yet the call succeeds and emits TYPEBOT_START.",
+      ),
     variables: z
       .array(z.object({ name: z.string(), value: z.string() }))
       .optional()
       .describe("Prefilled variables."),
   }),
-  handler: postBody("/typebot/start"),
+  handler: async (client, args) => {
+    const { inst, rest } = splitInstance(client, args);
+    // Both start modes crash with HTTP 500 (TypeError) when no TypebotSetting row exists.
+    if (!isSavedSettings(await client.get(`/typebot/fetchSettings/${inst}`))) {
+      throw new ToolInputError(
+        "Typebot settings were never saved for this instance: run evolution_typebot_settings_set first " +
+          "(Evolution fails with HTTP 500 without them).",
+      );
+    }
+    return client.post(`/typebot/start/${inst}`, { body: rest });
+  },
 };
 
 export const typebotGroup = makeBotGroup(
