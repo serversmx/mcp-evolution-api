@@ -20,22 +20,28 @@ grupos, 72 activas por defecto.
   (`EVOLUTION_MAX_MESSAGE_BYTES`) y los errores de transporte se registran en
   stderr.
 - Las peticiones con `delay` esperan `EVOLUTION_TIMEOUT_MS + delay`. Si un envío
-  agota el tiempo, el error avisa que el mensaje puede entregarse igualmente.
+  agota el tiempo, el error avisa que el mensaje puede entregarse igualmente; si
+  `typebot_start` lo agota, avisa que el flujo puede seguir enviándose y que
+  reintentar lo reinicia.
 - `typebot_start` usa `startSession: true` por defecto (el modo `false` no
   entrega mensajes en 2.3.7–develop) y exige settings de Typebot guardados.
 - `openai_creds_delete` ya no borra en cascada los bots que usan la credencial
   (requiere `force: true`) ni intenta borrar la credencial predeterminada.
 - `settings_set` de los bots ya no convierte valores NULL guardados en
-  `keywordFinish: "bye"` o `debounceTime: 1`: solo completa equivalentes en
-  ejecución y pide `keywordFinish` (y `unknownMessage` en Typebot) de forma
-  explícita.
+  `keywordFinish: "bye"` o `debounceTime: 1`: solo completa valores
+  equivalentes hoy en ejecución (un `keywordFinish` NULL, y `unknownMessage` en
+  Typebot, se envía como `""`). En Dify, n8n, EvoAI y Evolution Bot, donde
+  Evolution rechaza `""` si todos los campos son obligatorios, reenvía el
+  `fallbackId` guardado y, si no hay uno, pide `keywordFinish` explícito.
 - `chat_update_message` envía `key.remoteJid` como `number` (fallaba con números
   521…/549… escritos en dígitos).
-- `chat_find_messages` incluye el JID alterno @lid/teléfono y
-  `chat_find_contacts` pagina de 50 en 50 (`page` sin `offset` daba HTTP 500).
+- `chat_find_messages` envía `remoteJid` también como `remoteJidAlt`: con el JID
+  de teléfono encuentra además los mensajes recibidos guardados bajo el @lid del
+  chat. `chat_find_contacts` pagina de 50 en 50 (`page` sin `offset` daba
+  HTTP 500).
 - `message_send_media` exige `fileName` con extensión en documentos (se toma de
-  la URL cuando es posible) y `mimetype` en audio base64; antes Evolution
-  enviaba mimetype `"false"`.
+  la URL cuando es posible) y `mimetype` o un `fileName` con extensión en audio
+  base64; antes Evolution enviaba mimetype `"false"`.
 - `message_send_contact` toma `wuid` de los dígitos del teléfono.
 - `proxy_set` envía credenciales vacías (sin ellas el proxy no se guardaba) y
   solo admite `http`/`socks5`.
@@ -45,30 +51,39 @@ grupos, 72 activas por defecto.
   indicación accionable.
 - Descripciones corregidas: menciones, `webhookUrl` de plantillas, carrusel,
   `@newsletter`, perfil propio, `triggerType: "none"`, `change_status`,
-  `workflow` de Dify, `fallbackId` en Dify/n8n, `webhook_set`, SQS global y
-  nombres de credenciales OpenAI.
+  `workflow` de Dify, `fallbackId` en Dify/n8n, `webhook_set` (incluido que
+  `base64` se aplica tras reconectar la instancia), duración de
+  `typebot_start`, SQS global y nombres de credenciales OpenAI.
 
 ### Añadido
 
-- `EVOLUTION_MAX_RESULT_BYTES` (4 MiB): un resultado mayor devuelve un error con
-  su tamaño y un resumen en vez de cortar la conexión de Claude Code (10 MiB).
+- `EVOLUTION_MAX_RESULT_BYTES` (4 MiB): en un resultado mayor, los textos de
+  más de 64 KiB se sustituyen por `<omitted: N bytes>` (con una nota de lo
+  omitido) para no cortar la conexión de Claude Code (10 MiB); un envío de media
+  cuyo resultado trae el archivo en `message.base64` sigue siendo un éxito. Solo
+  si eso no basta, o en `chat_media_base64`, se devuelve un error con su tamaño
+  y un resumen (en los envíos, con la `key` del mensaje).
 - Compatibilidad con `develop` (sin publicar): `group_revoke_invite` y
   `group_leave` envían cuerpo JSON, `instance_fetch` filtra del lado del cliente
   y los errores explican las regresiones de upstream (GET de grupos con
-  Express 5 y creación de instancias tras #2549).
+  Express 5 y creación de instancias tras #2549). En `group_fetch_all`, el
+  mismo HTTP 500 en 2.3.7/2.4.0-rc2 indica que la instancia no tiene sesión de
+  WhatsApp cargada y el error pide conectarla.
 - CI: `npm test` en Node 22 y 24, publicación de la imagen condicionada a las
   pruebas, acciones con runtime Node 24, etiquetas OCI correctas y Dependabot.
 
 ### Cambios incompatibles
 
 - Los resultados son JSON compacto (sin indentación).
-- `typebot_start` sin `startSession` crea o reemplaza una sesión persistente.
+- `typebot_start` sin `startSession` crea o reemplaza una sesión persistente y
+  responde solo después de enviar los primeros mensajes del flujo.
 - `openai_creds_delete` rechaza credenciales en uso salvo `force: true`.
-- `settings_set` de los bots puede pedir `keywordFinish` explícito.
+- `settings_set` de Dify, n8n, EvoAI y Evolution Bot puede pedir `keywordFinish`
+  explícito si no hay un `fallbackId` guardado ni se envía uno.
 - `chat_find_contacts` devuelve 50 contactos por defecto.
 - `chat_update_message`: `number` es opcional y se ignora si hay `key.remoteJid`.
 - `message_send_media` rechaza documentos sin extensión, `fileName` sin extensión
-  y audio base64 sin `mimetype`.
+  (uno vacío cuenta como omitido) y audio base64 sin `mimetype` ni `fileName`.
 - Poll, sticker, botones y carrusel ya no exponen menciones, y las tarjetas del
   carrusel ya no tienen `title` (si se envían, se descartan sin error);
   `mentioned: []` es inválido.

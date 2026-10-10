@@ -27,7 +27,9 @@ responden 404 y el error lo explica.
 > (`invite_code`, `find_info`, `participants`, `fetch_all`, `invite_info`,
 > `accept_invite`) fallan con HTTP 500 por la migración a Express 5, y crear
 > instancias falla con un 400 de clave foránea tras el fix de seguridad #2549.
-> El MCP lo explica en el mensaje de error; en 2.3.7 y 2.4.0-rc2 todo funciona.
+> El MCP lo explica en el mensaje de error; en 2.3.7 y 2.4.0-rc2 todo funciona
+> (allí `group_fetch_all` solo responde ese HTTP 500 si la instancia no tiene
+> sesión de WhatsApp cargada, y el error indica conectarla).
 
 ## Requisitos
 
@@ -109,7 +111,7 @@ Variables de entorno (ver [.env.example](.env.example)):
 | `EVOLUTION_TOOLS` | — | Allowlist de grupos separada por comas. Ver abajo. |
 | `EVOLUTION_TIMEOUT_MS` | — | Timeout por petición (default `30000`). Las peticiones con `delay` (envíos y `chat_send_presence`) esperan timeout + delay, porque Evolution mantiene la petición abierta durante el delay. |
 | `EVOLUTION_MAX_MESSAGE_BYTES` | — | Tamaño máximo de un mensaje MCP entrante, p.ej. una llamada con media en base64 (default `67108864` = 64 MiB). Si se supera, la conexión se cierra y queda registrado en stderr. |
-| `EVOLUTION_MAX_RESULT_BYTES` | — | Tamaño máximo de un resultado (default `4194304` = 4 MiB). Uno mayor devuelve un error con su tamaño y un resumen. Mantenlo por debajo del límite del cliente: Claude Code corta los servidores con mensajes de más de 10 MiB (Claude Desktop, 32 MiB). |
+| `EVOLUTION_MAX_RESULT_BYTES` | — | Tamaño máximo de un resultado (default `4194304` = 4 MiB). En uno mayor, los textos de más de 64 KiB (p.ej. el base64 que devuelve un envío de media) se sustituyen por `<omitted: N bytes>`; solo es un error si eso no basta, y siempre en `chat_media_base64`. Mantenlo por debajo del límite del cliente: Claude Code corta los servidores con mensajes de más de 10 MiB (Claude Desktop, 32 MiB). |
 
 > ⚠️ La apikey global da **control total** sobre la instancia (crear/borrar
 > instancias, enviar mensajes, leer chats). Trátala como un secreto: nunca la
@@ -295,15 +297,26 @@ Una vez conectado, puedes pedirle a Claude cosas como:
   `chatwoot_set`, y `update`/`settings_set` de los bots exigen en el API todos los
   campos obligatorios. Si omites alguno, la herramienta lee la configuración
   actual, la combina con lo que pasaste y envía el objeto completo. En
-  `settings_set` de los bots, un valor guardado como NULL solo se completa con su
-  equivalente en ejecución (`delayMessage` 1000, `debounceTime` 0,
-  `ignoreJids` []); un `keywordFinish` NULL (y `unknownMessage` en Typebot) debe
-  pasarse explícitamente: la herramienta no inventa valores que cambien el
-  comportamiento del bot.
-- Los resultados se devuelven como JSON compacto. Un resultado mayor que
-  `EVOLUTION_MAX_RESULT_BYTES` devuelve un error con su tamaño y un resumen; para
-  media grande usa `message.mediaUrl` (con S3/MinIO) o el base64 de los webhooks
-  (`webhook_set` con `base64: true`) en lugar de `chat_media_base64`.
+  `settings_set` de los bots, un valor guardado como NULL solo se completa con un
+  valor equivalente hoy en ejecución (`delayMessage` 1000, `debounceTime` 0,
+  `ignoreJids` [], `unknownMessage` por defecto salvo en Typebot); un
+  `keywordFinish` NULL (y `unknownMessage` en Typebot) se envía como `""`, que
+  Evolution acepta si la petición lleva algún campo opcional. En Dify, n8n, EvoAI
+  y Evolution Bot todos los campos son obligatorios: la herramienta reenvía el
+  `fallbackId` guardado para mantenerlo vacío y, si no hay uno, pide
+  `keywordFinish` explícito. No inventa valores que cambien el comportamiento del
+  bot.
+- Los resultados se devuelven como JSON compacto. En un resultado mayor que
+  `EVOLUTION_MAX_RESULT_BYTES`, los textos de más de 64 KiB se sustituyen por
+  `<omitted: N bytes>` y un segundo bloque indica qué se omitió (p.ej.
+  `message.base64` cuando un envío de media devuelve el archivo porque el webhook
+  tiene `base64: true`). Si aun así no cabe, o en `chat_media_base64`, se
+  devuelve un error con su tamaño y un resumen; en los envíos incluye la `key`
+  del mensaje y avisa que Evolution ya lo aceptó (no reintentar). Para media
+  grande usa `message.mediaUrl` (con S3/MinIO) o el base64 de los webhooks
+  (`webhook_set` con `base64: true`; en Baileys se aplica a la media nueva tras
+  reconectar la instancia, p.ej. con `instance_restart`) en lugar de
+  `chat_media_base64`.
 - Los `events` de webhook/websocket/rabbitmq/sqs/nats/kafka/pusher siempre se
   envían: `[]` (por defecto) significa **todos** los eventos.
 - `message_send_media` permite `transport: "multipart"`: recibe base64 en los
@@ -312,16 +325,21 @@ Una vez conectado, puedes pedirle a Claude cosas como:
   Evolution recibe los campos multipart como strings y rechaza esos tipos.
   Los demás envíos de media aceptan URL/base64 mediante JSON.
 - `message_send_media`: todo `fileName` debe llevar extensión (Evolution deriva
-  el mimetype de él y si no envía `"false"`); los documentos lo exigen (se toma
-  de la ruta de la URL cuando termina en extensión) y el audio base64 necesita
-  `mimetype` o `fileName`.
+  el mimetype de él y si no envía `"false"`); uno vacío (`""`) cuenta como
+  omitido. Los documentos lo exigen (se toma de la ruta de la URL cuando termina
+  en extensión) y el audio base64 necesita `mimetype` o `fileName`.
 - Menciones: poll, sticker, botones y carrusel no las ofrecen porque Evolution
   nunca las aplica; `send_list` las conserva (2.3.7 las aplica, 2.4+ las ignora).
 - `chat_find_contacts` pagina de 50 en 50 por defecto (usa `page`/`offset`).
 - `typebot_start` usa `startSession: true` por defecto (el modo `false` no
   entrega mensajes en 2.3.7–develop) y requiere settings de Typebot guardados.
-- `openai_creds_delete` no borra la credencial predeterminada de los settings ni
-  credenciales que usan bots (se borrarían en cascada) salvo con `force: true`.
+  Evolution responde cuando termina de enviar los primeros mensajes del flujo, así
+  que una apertura larga puede agotar `EVOLUTION_TIMEOUT_MS`: revisa el chat
+  antes de reintentar, porque reintentar borra las sesiones de bot del chat y
+  reinicia el flujo.
+- `openai_creds_delete` nunca borra la credencial predeterminada de los settings
+  (primero apunta los settings a otra) y rechaza credenciales que usan bots (se
+  borrarían en cascada) salvo con `force: true`.
 - `proxy_set` solo admite `http` y `socks5`; omitir `username`/`password` deja el
   proxy sin autenticación.
 - Se excluyen los receptores de webhooks entrantes, las rutas internas de
@@ -358,10 +376,12 @@ Las herramientas de bots (`typebot`, `openai`, `dify`, `evolutionbot`, `flowise`
 
 - Resultados en JSON compacto y con límite de tamaño (`EVOLUTION_MAX_RESULT_BYTES`).
 - `evolution_typebot_start`: sin `startSession` crea o reemplaza una sesión
-  persistente; falla antes de llamar al API si los settings de Typebot nunca se
-  guardaron.
+  persistente y responde solo después de enviar los primeros mensajes del flujo;
+  si los settings de Typebot nunca se guardaron, falla sin llamar a
+  `/typebot/start` (antes consulta `/typebot/fetchSettings`).
 - `evolution_openai_creds_delete`: rechaza credenciales en uso salvo `force: true`.
-- `settings_set` de los bots puede pedir `keywordFinish` explícito (ver arriba).
+- `settings_set` de Dify, n8n, EvoAI y Evolution Bot puede pedir `keywordFinish`
+  explícito si no hay un `fallbackId` guardado ni se envía uno (ver arriba).
 - `evolution_chat_find_contacts`: 50 contactos por defecto.
 - `evolution_chat_update_message`: `number` es opcional y se usa `key.remoteJid`.
 - `evolution_message_send_media`: valida `fileName`/`mimetype` antes de enviar.
