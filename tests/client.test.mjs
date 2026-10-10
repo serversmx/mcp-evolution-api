@@ -153,6 +153,73 @@ test("send timeouts report the effective timeout and warn that the message may s
   );
 });
 
+/** Answer every fetch with an Evolution error envelope. */
+function mockError(status, message) {
+  mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
+    status, error: status === 500 ? "Internal Server Error" : "Bad Request", response: { message },
+  }), { status }));
+}
+
+test("'[object Object]' errors are replaced by a hint for the failing route", async () => {
+  // restart/connect answer 200 {error:true, message: error.toString()} (instance.controller.ts@2.3.7).
+  mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ error: true, message: "[object Object]" })));
+  await assert.rejects(client.post("/instance/restart/test"), {
+    status: 200,
+    message: "Evolution API could not restart the instance (it is probably closed or not loaded): use evolution_instance_connect.",
+  });
+  await assert.rejects(client.get("/instance/connect/test"), {
+    message: "Evolution API failed to start the connection (details were lost server-side): check evolution_instance_connection_state and the server logs.",
+  });
+  mock.restoreAll();
+  // 2.3.7 delete: BadRequestException(error.toString()) when the logout fails.
+  mockError(400, ["[object Object]"]);
+  await assert.rejects(client.delete("/instance/delete/test"), {
+    status: 400,
+    message: "Evolution API 2.3.7 failed to log the instance out before deleting it: retry, or run evolution_instance_logout first.",
+  });
+  await assert.rejects(client.delete("/instance/logout/test"), {
+    message: "Evolution API returned an error without details ('[object Object]').",
+  });
+});
+
+test("develop's Express 5 group crash is explained only for group calls without a JSON body", async () => {
+  mockError(500, "Cannot convert undefined or null to object");
+  await assert.rejects(client.get("/group/participants/test", { query: { groupJid: "120363000000000000@g.us" } }), {
+    status: 500,
+    message: "Cannot convert undefined or null to object (known Evolution API develop/2.4 regression: Express 5 " +
+      "leaves the request body undefined on group routes that carry no JSON body; works on 2.3.7 and " +
+      "2.4.0-rc2 — report it upstream)",
+  });
+  await assert.rejects(
+    client.post("/group/updateGroupSubject/test", { body: { groupJid: "120363000000000000@g.us", subject: "New" } }),
+    { message: "Cannot convert undefined or null to object" },
+  );
+  await assert.rejects(client.get("/chat/findChats/test"), { message: "Cannot convert undefined or null to object" });
+});
+
+test("develop's instance-create foreign-key failure is explained", async () => {
+  const hint = " (known Evolution API develop regression from security fix #2549: instanceName is stripped from " +
+    "the create body; use 2.3.7/2.4.0-rc2 or a build that includes upstream commit ebd7ab7)";
+  const body = { instanceName: "sales", integration: "WHATSAPP-BAILEYS" };
+  // Prisma messages start with a newline, which the extracted message drops.
+  for (const [prismaMessage, extracted] of [
+    [
+      "\nInvalid `this.prismaRepository.webhook.upsert()` invocation:\n\nForeign key constraint violated on the constraint: `Webhook_instanceId_fkey`",
+      "Invalid `this.prismaRepository.webhook.upsert()` invocation:\n\nForeign key constraint violated on the constraint: `Webhook_instanceId_fkey`",
+    ],
+    [
+      "\nInvalid `this.prismaRepository.setting.upsert()` invocation:\n\nForeign key constraint failed on the field: `Setting_instanceId_fkey (index)`",
+      "Invalid `this.prismaRepository.setting.upsert()` invocation:\n\nForeign key constraint failed on the field: `Setting_instanceId_fkey (index)`",
+    ],
+  ]) {
+    mockError(400, [prismaMessage]);
+    await assert.rejects(client.post("/instance/create", { body }), { status: 400, message: extracted + hint });
+    mock.restoreAll();
+  }
+  mockError(400, ['This name "sales" is already in use.']);
+  await assert.rejects(client.post("/instance/create", { body }), { message: 'This name "sales" is already in use.' });
+});
+
 test("credential verification withholds Facebook secrets", async () => {
   mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
     status: 200, message: "Credentials are valid", facebookAppId: "app-id",

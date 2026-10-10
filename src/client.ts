@@ -151,7 +151,7 @@ export class EvolutionClient {
     const reportedError = parsed && typeof parsed === "object" &&
       (parsed as Record<string, unknown>).error === true;
     if (!res.ok || reportedError) {
-      throw buildApiError(res.status, parsed);
+      throw buildApiError(res.status, parsed, { method, path, hasBody: bodyInit !== undefined });
     }
 
     return parsed as T;
@@ -201,8 +201,15 @@ function safeJsonParse(text: string): unknown {
   }
 }
 
+/** The request that failed, for route-specific error hints. */
+interface FailedRequest {
+  method: HttpMethod;
+  path: string;
+  hasBody: boolean;
+}
+
 /** Map a non-2xx response to an EvolutionApiError with the most useful message. */
-function buildApiError(status: number, body: unknown): EvolutionApiError {
+function buildApiError(status: number, body: unknown, req: FailedRequest): EvolutionApiError {
   const obj = body && typeof body === "object" ? (body as Record<string, unknown>) : undefined;
 
   // 2.4+ license gate: every business route answers 503 until the server is activated.
@@ -217,6 +224,11 @@ function buildApiError(status: number, body: unknown): EvolutionApiError {
 
   let message = extractApiMessage(body, status);
 
+  // 2.3.7 stringifies its own exception objects (restart/connect/delete): the details are lost.
+  if (message === "[object Object]") {
+    message = objectObjectHint(req.path);
+  }
+
   // Express answers "Cannot POST /x" for routes it does not know: the endpoint is not
   // available in this server version (e.g. a 2.4-only route called on 2.3.7).
   if (status === 404 && /Cannot (GET|POST|PUT|DELETE) \//.test(message)) {
@@ -225,8 +237,54 @@ function buildApiError(status: number, body: unknown): EvolutionApiError {
       "Evolution API version, e.g. 2.4+)";
   }
 
+  // develop (Express 5 / body-parser 2): req.body stays undefined without a JSON body and
+  // groupValidate's Object.assign(body, ...) throws.
+  if (
+    status === 500 &&
+    !req.hasBody &&
+    req.path.startsWith("/group/") &&
+    message.includes("Cannot convert undefined or null to object")
+  ) {
+    message +=
+      " (known Evolution API develop/2.4 regression: Express 5 leaves the request body undefined on " +
+      "group routes that carry no JSON body; works on 2.3.7 and 2.4.0-rc2 — report it upstream)";
+  }
+
+  // develop after #2549: instanceName never reaches createInstance, so the first dependent
+  // upsert (Webhook/Setting) fails on its instanceId foreign key.
+  if (
+    status === 400 &&
+    req.method === "POST" &&
+    req.path === "/instance/create" &&
+    /instanceId_fkey|foreign key/i.test(message)
+  ) {
+    message +=
+      " (known Evolution API develop regression from security fix #2549: instanceName is stripped from " +
+      "the create body; use 2.3.7/2.4.0-rc2 or a build that includes upstream commit ebd7ab7)";
+  }
+
   const code = typeof obj?.code === "string" ? obj.code : undefined;
   return new EvolutionApiError(status, message, body, code);
+}
+
+/** Replacement for a detail-less '[object Object]' error, by route. */
+function objectObjectHint(path: string): string {
+  if (path.startsWith("/instance/restart/")) {
+    return "Evolution API could not restart the instance (it is probably closed or not loaded): use evolution_instance_connect.";
+  }
+  if (path.startsWith("/instance/connect/")) {
+    return (
+      "Evolution API failed to start the connection (details were lost server-side): check " +
+      "evolution_instance_connection_state and the server logs."
+    );
+  }
+  if (path.startsWith("/instance/delete/")) {
+    return (
+      "Evolution API 2.3.7 failed to log the instance out before deleting it: retry, or run " +
+      "evolution_instance_logout first."
+    );
+  }
+  return "Evolution API returned an error without details ('[object Object]').";
 }
 
 /**
