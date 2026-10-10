@@ -163,9 +163,9 @@ const SUMMARY_FIELDS = ["key", "mimetype", "fileName", "mediaType", "messageType
 const MAX_SUMMARY_KEYS = 20;
 
 const MEDIA_HINT =
-  "Download the media from its URL instead (message.mediaUrl when S3/MinIO storage is enabled), or " +
-  "receive new media as base64 in webhooks (evolution_webhook_set base64: true; Evolution applies it " +
-  "after the instance reconnects, e.g. evolution_instance_restart). Raise the limit with care: " +
+  "Download the media from its URL instead (message.mediaUrl when S3/MinIO storage is enabled), or, on " +
+  "WHATSAPP-BAILEYS instances, receive new media as base64 in webhooks (evolution_webhook_set base64: true; " +
+  "Evolution applies it after the instance reconnects, e.g. evolution_instance_restart). Raise the limit with care: " +
   "Claude Code drops MCP connections whose messages exceed 10 MiB (Claude Desktop: 32 MiB).";
 
 /** The guard only runs after a 2xx response, so the send already went through. */

@@ -32,7 +32,8 @@ grupos, 72 activas por defecto.
   equivalentes hoy en ejecución (un `keywordFinish` NULL, y `unknownMessage` en
   Typebot, se envía como `""`). En Dify, n8n, EvoAI y Evolution Bot, donde
   Evolution rechaza `""` si todos los campos son obligatorios, reenvía el
-  `fallbackId` guardado y, si no hay uno, pide `keywordFinish` explícito.
+  `fallbackId` guardado (o `null` si no hay), sin cambiar el fallback.
+  `fallbackId: ""` se rechaza antes de llamar al API (daba HTTP 500).
 - `chat_update_message` envía `key.remoteJid` como `number` (fallaba con números
   521…/549… escritos en dígitos).
 - `chat_find_messages` envía `remoteJid` también como `remoteJidAlt`: con el JID
@@ -77,9 +78,11 @@ grupos, 72 activas por defecto.
 - Los resultados son JSON compacto (sin indentación).
 - `typebot_start` sin `startSession` crea o reemplaza una sesión persistente y
   responde solo después de enviar los primeros mensajes del flujo.
-- `openai_creds_delete` rechaza credenciales en uso salvo `force: true`.
-- `settings_set` de Dify, n8n, EvoAI y Evolution Bot puede pedir `keywordFinish`
-  explícito si no hay un `fallbackId` guardado ni se envía uno.
+- `openai_creds_delete` rechaza credenciales que usan bots salvo `force: true`
+  y nunca borra la predeterminada de los settings.
+- `settings_set` de los bots envía un `keywordFinish` NULL como `""` en vez de
+  `"bye"` y, en Dify, n8n, EvoAI y Evolution Bot, añade el `fallbackId` guardado
+  (o `null`); `fallbackId: ""` es inválido.
 - `chat_find_contacts` devuelve 50 contactos por defecto.
 - `chat_update_message`: `number` es opcional y se ignora si hay `key.remoteJid`.
 - `message_send_media` rechaza documentos sin extensión, `fileName` sin extensión

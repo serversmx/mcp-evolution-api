@@ -106,20 +106,12 @@ const NULL_EQUIVALENT_SETTINGS: Record<string, unknown> = {
 };
 
 /**
- * What a NULL means for the required strings that have no stand-in above (keywordFinish, and
- * unknownMessage on Typebot). They are sent as "", which every service reads like NULL today
- * (`keywordFinish || ''`, `if (unknownMessage)`), but Evolution's isNotEmpty enforces minLength
- * when every body key is a required key, so "" is only accepted once the body has an optional field.
+ * Required strings with no stand-in above (keywordFinish, and unknownMessage on Typebot): a NULL
+ * is sent as "", which every service reads like NULL today (`keywordFinish || ''`,
+ * `if (unknownMessage)`). Evolution's isNotEmpty only enforces minLength when every key of the
+ * body is a required key, so such a body also carries the fallbackId (see settings_set).
  */
-const NULL_MEANING: Record<string, string> = {
-  keywordFinish: "no finish keyword today; any value you pass becomes a keyword that closes the session",
-  unknownMessage: "no reply to unsupported messages today; any value you pass is sent as that reply",
-};
-
-/** "a, b or c". */
-function orList(items: string[]): string {
-  return items.length > 1 ? `${items.slice(0, -1).join(", ")} or ${items[items.length - 1]}` : items.join("");
-}
+const EMPTY_STRING_KEYS = ["keywordFinish", "unknownMessage"];
 
 /** fetchSettings answers the server defaults, without `id`, until the settings are saved once. */
 export function isSavedSettings(settings: unknown): boolean {
@@ -186,32 +178,35 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
     ...(spec.settingsExtraShape ?? {}),
     fallbackId: z
       .string()
+      .min(1, "Pass a bot id; omit fallbackId to keep the current one")
       .optional()
       .describe(
-        "Id of the default bot used when no trigger matches (the only fallback field the server reads). " +
-          "Omit to keep the current one." +
-          (fallbackWarning ? ` WARNING: ${fallbackWarning}` : ""),
+        fallbackWarning
+          ? `Id of a ${label} bot stored as the default fallback; omit to keep the current one. WARNING: ` +
+              fallbackWarning
+          : "Id of the default bot used when no trigger matches (the only fallback field the server reads). " +
+              "Omit to keep the current one.",
       ),
   };
   const settingsMergeKeys = [...BEHAVIOUR_KEYS, ...Object.keys(spec.settingsExtraShape ?? {})];
-  const nullEquivalents = { ...NULL_EQUIVALENT_SETTINGS };
-  if (spec.sendsUnknownMessage) delete nullEquivalents.unknownMessage;
-  // Required strings whose NULL can only be kept as "" (when Evolution accepts it).
-  const emptyKeys = spec.settingsRequired.filter((key) => key in NULL_MEANING && !(key in nullEquivalents));
-  const optionalKeys = Object.keys(settingsShape).filter((key) => !spec.settingsRequired.includes(key));
-  // A stored row always re-sends an optional column with a DB default (keepOpen, splitMessages,
-  // timePerChar), unless every merged column is required (Dify, n8n, EvoAI, Evolution Bot).
-  const storedHasOptional = settingsMergeKeys.some((key) => !spec.settingsRequired.includes(key));
-  const nullFills: Record<string, unknown> = { ...nullEquivalents };
-  if (storedHasOptional) for (const key of emptyKeys) nullFills[key] = "";
+  const nullFills: Record<string, unknown> = { ...NULL_EQUIVALENT_SETTINGS };
+  if (spec.sendsUnknownMessage) delete nullFills.unknownMessage;
+  for (const key of EMPTY_STRING_KEYS) if (!(key in nullFills)) nullFills[key] = "";
   const nullFilled = spec.settingsRequired
     .filter((key) => key in nullFills)
     .map((key) => `${key} ${JSON.stringify(nullFills[key])}`)
     .join(", ");
-  const nullRefused = storedHasOptional
+  // A stored row always re-sends an optional column with a DB default (keepOpen, splitMessages,
+  // timePerChar), unless every merged column is required (Dify, n8n, EvoAI, Evolution Bot).
+  const storedHasOptional = settingsMergeKeys.some((key) => !spec.settingsRequired.includes(key));
+  const emptyNote = storedHasOptional
     ? ""
-    : `; a NULL or empty ${orList(emptyKeys)} must be passed explicitly unless a ${orList(optionalKeys)} is ` +
-      `stored (re-sent automatically) or sent (then it is kept as "")`;
+    : `. So that Evolution accepts "", the tool also re-sends the stored fallbackId (or null when there is ` +
+      `none), which leaves the fallback unchanged`;
+  // Evolution's isNotEmpty enforces minLength only when every key of the body is a required key.
+  const rejectsEmpty = (body: Record<string, unknown>) =>
+    Object.keys(body).every((key) => spec.settingsRequired.includes(key)) &&
+    spec.settingsRequired.some((key) => body[key] === "");
 
   return [
     {
@@ -305,52 +300,33 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
       description:
         `Set the default ${label} settings for an instance. Omitted fields keep their stored values ` +
         `(server defaults if never saved). Required fields stored as NULL are only filled with values ` +
-        `that are runtime-equivalent today (${nullFilled})${nullRefused}. ` +
+        `that are runtime-equivalent today (${nullFilled})${emptyNote}. ` +
         (fallbackWarning || "Set the default bot with fallbackId."),
       inputSchema: z.object({ instance: instanceField, ...settingsShape }),
       handler: async (client, args) => {
         const { instance, ...changes } = args;
         const inst = client.resolveInstance(instance as string | undefined);
         let body = compact(changes);
-        if (missingKeys(body, spec.settingsRequired).length > 0) {
+        // A complete request with "" still needs the stored fallbackId (see below).
+        if (missingKeys(body, spec.settingsRequired).length > 0 || rejectsEmpty(body)) {
           const current = await client.get(`/${base}/fetchSettings/${inst}`);
-          if (!isSavedSettings(current)) {
+          const saved = isSavedSettings(current);
+          if (!saved) {
             // Never saved: the server creates the row, so its documented defaults apply.
             body = { ...SETTINGS_DEFAULTS, ...pickDefined(current, settingsMergeKeys), ...body };
           } else {
             // Stored row: a default for a NULL column would change live bots (keywordFinish
             // 'bye' closes sessions on that word), so only runtime-equivalent values are used.
             body = { ...pickDefined(current, settingsMergeKeys), ...body };
-            // Evolution rejects "" only when every key of the body is a required key.
-            const acceptsEmpty = Object.keys(body).some((key) => !spec.settingsRequired.includes(key));
-            const unset = missingKeys(body, spec.settingsRequired);
-            // NULL, or already "" (stored by an earlier call or passed now): both need "" accepted.
-            const blank = emptyKeys.filter((key) => unset.includes(key) || body[key] === "");
-            if (blank.length > 0 && !acceptsEmpty) {
-              const storedFallback = (current as Record<string, unknown>).fallbackId;
-              if (typeof storedFallback === "string" && storedFallback) {
-                // Re-sending the stored fallback is a no-op write that makes Evolution accept "".
-                body.fallbackId = storedFallback;
-              } else {
-                throw new ToolInputError(
-                  `Stored ${label} settings have ` +
-                    blank
-                      .map((key) => `${key} ${unset.includes(key) ? "NULL" : "empty"} (${NULL_MEANING[key]})`)
-                      .join(" and ") +
-                    `. Evolution rejects "" in this request because every field in it is required, and no ` +
-                    `fallbackId is stored to re-send. Either pass ${orList(blank)} explicitly, or set fallbackId: ` +
-                    (spec.fallbackIgnored
-                      ? `${label} ignores it at runtime (Evolution API 2.3.7–develop), so any ${label} bot id ` +
-                        "keeps today's behaviour."
-                      : "that bot then answers every message that matches no trigger.") +
-                    " Ask the user if unsure.",
-                );
-              }
+            for (const key of missingKeys(body, spec.settingsRequired)) {
+              if (key in nullFills) body[key] = nullFills[key];
             }
-            for (const key of unset) {
-              if (key in nullEquivalents) body[key] = nullEquivalents[key];
-              else if (blank.includes(key)) body[key] = "";
-            }
+          }
+          if (rejectsEmpty(body)) {
+            // Re-sending the stored fallback (or NULL over NULL) is a no-op write that makes the
+            // body carry an optional key, so Evolution accepts the "".
+            const stored = saved ? (current as Record<string, unknown>).fallbackId : undefined;
+            body.fallbackId = typeof stored === "string" && stored ? stored : null;
           }
         }
         const missing = missingKeys(body, spec.settingsRequired);

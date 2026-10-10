@@ -141,15 +141,22 @@ function settingsWithNullBehaviour(extra = {}) {
   };
 }
 
-test("bot settings with only required fields refuse a NULL finish keyword and say how to keep it empty", async () => {
+test("bot settings with only required fields keep a NULL finish keyword empty by re-sending the NULL fallback", async () => {
   const settings = tool("n8n", "settings_set");
   const client = clientFor(storedN8nSettings());
-  await assert.rejects(
-    settings.handler(client, settings.inputSchema.parse({ expire: 0 })),
-    (err) => err instanceof ToolInputError && /keywordFinish/.test(err.message) && /fallbackId/.test(err.message) &&
-      !/delayMessage|unknownMessage|debounceTime|ignoreJids/.test(err.message),
-  );
-  assert.deepEqual(client.calls, [{ method: "GET", path: "/n8n/fetchSettings/instance" }]);
+  await settings.handler(client, settings.inputSchema.parse({ expire: 0 }));
+  assert.deepEqual(client.calls, [
+    { method: "GET", path: "/n8n/fetchSettings/instance" },
+    {
+      method: "POST",
+      path: "/n8n/settings/instance",
+      body: {
+        expire: 0, keywordFinish: "", delayMessage: 1000, unknownMessage: "Sorry, I dont understand",
+        listeningFromMe: false, stopBotFromMe: false, keepOpen: true, debounceTime: 0, ignoreJids: [],
+        splitMessages: false, timePerChar: 0, fallbackId: null,
+      },
+    },
+  ]);
 });
 
 test("bot settings send a NULL finish keyword as \"\" when fallbackId lets Evolution accept it", async (t) => {
@@ -211,46 +218,76 @@ test("bot settings re-send the stored fallbackId so an empty finish keyword stay
   });
 });
 
-test("bot settings refuse an empty finish keyword without a stored fallbackId and explain the trade-off", async (t) => {
-  await t.test("EvoAI: a new fallback changes behaviour", async () => {
+test("bot settings without a stored fallback send fallbackId null so an empty value stays accepted", async (t) => {
+  await t.test("EvoAI row whose keywordFinish is already \"\"", async () => {
     const settings = tool("evoai", "settings_set");
     const client = clientFor(settingsWithNullBehaviour({ keywordFinish: "", evoaiIdFallback: null }));
-    await assert.rejects(
-      settings.handler(client, settings.inputSchema.parse({ expire: 30 })),
-      (err) => err instanceof ToolInputError && /no fallbackId is stored/i.test(err.message) &&
-        /every message that matches no trigger/.test(err.message),
-    );
-    assert.equal(client.calls.length, 1);
+    await settings.handler(client, settings.inputSchema.parse({ expire: 30 }));
+    assert.equal(client.calls[1].body.keywordFinish, "");
+    assert.equal(client.calls[1].body.fallbackId, null);
   });
-  await t.test("n8n: a fallback is ignored at runtime", async () => {
+  await t.test("clearing a stored finish keyword", async () => {
     const settings = tool("n8n", "settings_set");
-    const client = clientFor(storedN8nSettings());
-    await assert.rejects(
-      settings.handler(client, settings.inputSchema.parse({ expire: 30 })),
-      (err) => err instanceof ToolInputError && /no fallbackId is stored/i.test(err.message) &&
-        /ignores it at runtime/.test(err.message),
-    );
+    const client = clientFor({ ...storedN8nSettings(), keywordFinish: "bye" });
+    await settings.handler(client, settings.inputSchema.parse({ keywordFinish: "" }));
+    assert.equal(client.calls[1].body.keywordFinish, "");
+    assert.equal(client.calls[1].body.fallbackId, null);
+  });
+  await t.test("n8n row with a stored empty unknownMessage", async () => {
+    const settings = tool("n8n", "settings_set");
+    const client = clientFor({ ...storedN8nSettings(), unknownMessage: "" });
+    await settings.handler(client, settings.inputSchema.parse({ keywordFinish: "#end" }));
+    assert.equal(client.calls[1].body.unknownMessage, "");
+    assert.equal(client.calls[1].body.fallbackId, null);
   });
 });
 
-test("settings_set descriptions ask for keywordFinish exactly where a NULL one is refused", async () => {
-  for (const [group, row, refused] of [
-    ["typebot", settingsWithNullBehaviour({ typebotIdFallback: null }), false],
-    ["openai", settingsWithNullBehaviour({ openaiIdFallback: null, openaiCredsId: "creds-1", speechToText: false }),
-      false],
-    ["flowise", settingsWithNullBehaviour({ flowiseIdFallback: null }), false],
-    ["dify", settingsWithNullBehaviour({ difyIdFallback: null }), true],
-    ["n8n", settingsWithNullBehaviour({ n8nIdFallback: null }), true],
-    ["evolutionbot", settingsWithNullBehaviour({ botIdFallback: null }), true],
-    ["evoai", settingsWithNullBehaviour({ evoaiIdFallback: null }), true],
+test("bot settings re-send the stored fallback for a stored empty unknownMessage", async () => {
+  const settings = tool("evoai", "settings_set");
+  const client = clientFor(settingsWithNullBehaviour({
+    keywordFinish: "#end", unknownMessage: "", fallbackId: "fb", evoaiIdFallback: "fb",
+  }));
+  await settings.handler(client, settings.inputSchema.parse({ expire: 15 }));
+  assert.equal(client.calls[1].body.unknownMessage, "");
+  assert.equal(client.calls[1].body.fallbackId, "fb");
+});
+
+test("a complete settings request that clears keywordFinish still reads the stored fallback", async () => {
+  const settings = tool("evoai", "settings_set");
+  const client = clientFor(settingsWithNullBehaviour({ keywordFinish: "bye", fallbackId: "fb", evoaiIdFallback: "fb" }));
+  const complete = {
+    expire: 60, keywordFinish: "", delayMessage: 1000, unknownMessage: "Sorry", listeningFromMe: false,
+    stopBotFromMe: false, keepOpen: false, debounceTime: 0, ignoreJids: [], splitMessages: false, timePerChar: 0,
+  };
+  await settings.handler(client, settings.inputSchema.parse(complete));
+  assert.deepEqual(client.calls.map(({ method, path }) => `${method} ${path}`), [
+    "GET /evoai/fetchSettings/instance",
+    "POST /evoai/settings/instance",
+  ]);
+  assert.deepEqual(client.calls[1].body, { ...complete, fallbackId: "fb" });
+});
+
+test("bot settings_set rejects fallbackId \"\" before any request", () => {
+  const settings = tool("evoai", "settings_set");
+  assert.throws(() => settings.inputSchema.parse({ fallbackId: "" }));
+});
+
+test("settings_set never refuses a NULL keywordFinish and describes how it stays empty", async () => {
+  for (const [group, row] of [
+    ["typebot", settingsWithNullBehaviour({ typebotIdFallback: null })],
+    ["openai", settingsWithNullBehaviour({ openaiIdFallback: null, openaiCredsId: "creds-1", speechToText: false })],
+    ["flowise", settingsWithNullBehaviour({ flowiseIdFallback: null })],
+    ["dify", settingsWithNullBehaviour({ difyIdFallback: null })],
+    ["n8n", settingsWithNullBehaviour({ n8nIdFallback: null })],
+    ["evolutionbot", settingsWithNullBehaviour({ botIdFallback: null })],
+    ["evoai", settingsWithNullBehaviour({ evoaiIdFallback: null })],
   ]) {
     const settings = tool(group, "settings_set");
-    const outcome = await settings.handler(clientFor(row), settings.inputSchema.parse({ expire: 30 })).then(
-      () => "sent",
-      (err) => (err instanceof ToolInputError ? "refused" : err),
-    );
-    assert.equal(outcome, refused ? "refused" : "sent", `${group} settings_set`);
-    assert.equal(/keywordFinish must be passed/.test(settings.description), refused, `${group} description`);
+    const client = clientFor(row);
+    await settings.handler(client, settings.inputSchema.parse({ expire: 30 }));
+    assert.equal(client.calls[1].body.keywordFinish, "", `${group} keywordFinish`);
+    assert.equal(/must be passed/.test(settings.description), false, `${group} description`);
+    assert.match(settings.description, /keywordFinish ""/, `${group} description`);
   }
 });
 

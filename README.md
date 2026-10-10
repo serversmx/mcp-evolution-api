@@ -302,10 +302,10 @@ Una vez conectado, puedes pedirle a Claude cosas como:
   `ignoreJids` [], `unknownMessage` por defecto salvo en Typebot); un
   `keywordFinish` NULL (y `unknownMessage` en Typebot) se envía como `""`, que
   Evolution acepta si la petición lleva algún campo opcional. En Dify, n8n, EvoAI
-  y Evolution Bot todos los campos son obligatorios: la herramienta reenvía el
-  `fallbackId` guardado para mantenerlo vacío y, si no hay uno, pide
-  `keywordFinish` explícito. No inventa valores que cambien el comportamiento del
-  bot.
+  y Evolution Bot todos los campos son obligatorios, así que la herramienta
+  reenvía el `fallbackId` guardado (o `null` si no hay): el fallback no cambia.
+  No inventa valores que cambien el comportamiento del bot, y `fallbackId: ""`
+  se rechaza antes de llamar al API.
 - Los resultados se devuelven como JSON compacto. En un resultado mayor que
   `EVOLUTION_MAX_RESULT_BYTES`, los textos de más de 64 KiB se sustituyen por
   `<omitted: N bytes>` y un segundo bloque indica qué se omitió (p.ej.
@@ -379,9 +379,11 @@ Las herramientas de bots (`typebot`, `openai`, `dify`, `evolutionbot`, `flowise`
   persistente y responde solo después de enviar los primeros mensajes del flujo;
   si los settings de Typebot nunca se guardaron, falla sin llamar a
   `/typebot/start` (antes consulta `/typebot/fetchSettings`).
-- `evolution_openai_creds_delete`: rechaza credenciales en uso salvo `force: true`.
-- `settings_set` de Dify, n8n, EvoAI y Evolution Bot puede pedir `keywordFinish`
-  explícito si no hay un `fallbackId` guardado ni se envía uno (ver arriba).
+- `evolution_openai_creds_delete`: rechaza credenciales que usan bots salvo
+  `force: true` y nunca borra la credencial predeterminada de los settings.
+- `settings_set` de los bots: un `keywordFinish` NULL se envía como `""` (sin
+  inventar `"bye"`) y en Dify, n8n, EvoAI y Evolution Bot va acompañado del
+  `fallbackId` guardado o `null` (ver arriba); `fallbackId: ""` es inválido.
 - `evolution_chat_find_contacts`: 50 contactos por defecto.
 - `evolution_chat_update_message`: `number` es opcional y se usa `key.remoteJid`.
 - `evolution_message_send_media`: valida `fileName`/`mimetype` antes de enviar.
