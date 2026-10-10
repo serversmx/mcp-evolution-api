@@ -49,7 +49,7 @@ function mockFetch(reply = () => ({})) {
   return requests;
 }
 
-test("find_messages sends remoteJid as remoteJidAlt unless the caller passed one", async () => {
+test("find_messages sends remoteJid as remoteJidAlt unless the caller passed a non-empty one", async () => {
   const requests = mockFetch(() => ({ messages: { records: [] } }));
   for (const [where, sent] of [
     [
@@ -57,6 +57,8 @@ test("find_messages sends remoteJid as remoteJidAlt unless the caller passed one
       { key: { remoteJid: PHONE_JID, fromMe: true, remoteJidAlt: PHONE_JID }, messageType: "imageMessage" },
     ],
     [{ key: { remoteJid: LID_JID } }, { key: { remoteJid: LID_JID, remoteJidAlt: LID_JID } }],
+    // Evolution drops an empty remoteJidAlt filter, which would leave only key.remoteJid = PHONE_JID.
+    [{ key: { remoteJid: PHONE_JID, remoteJidAlt: "" } }, { key: { remoteJid: PHONE_JID, remoteJidAlt: PHONE_JID } }],
     [{ key: { remoteJid: PHONE_JID, remoteJidAlt: LID_JID } }, { key: { remoteJid: PHONE_JID, remoteJidAlt: LID_JID } }],
     [{ key: { remoteJidAlt: LID_JID } }, { key: { remoteJidAlt: LID_JID } }],
     [{ key: { id: "3EB0ABCDEF" } }, { key: { id: "3EB0ABCDEF" } }],

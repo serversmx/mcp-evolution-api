@@ -14,15 +14,17 @@ const pageShape = {
 };
 
 /**
- * findMessages matches `key.remoteJid = X OR key.remoteJidAlt = Y` (only for the keys sent), and keys
+ * findMessages matches `key.remoteJid = X OR key.remoteJidAlt = Y` (only for non-empty keys), and keys
  * are stored as Baileys delivers them (an @lid chat keeps remoteJid=<lid>, remoteJidAlt=<phone>).
- * Sending remoteJid as remoteJidAlt too makes a phone or @lid JID match both forms.
+ * Sending remoteJid as remoteJidAlt too makes the phone JID match both forms; an @lid JID still misses
+ * messages sent through the API (stored under the phone JID without remoteJidAlt). A caller's non-empty
+ * remoteJidAlt is kept; an empty one, which Evolution ignores, gets the default.
  */
 function withAlternateJid(where: unknown): unknown {
   if (!where || typeof where !== "object") return where;
   const filters = where as { key?: Record<string, unknown> };
   const key = filters.key;
-  if (!key?.remoteJid || key.remoteJidAlt !== undefined) return where;
+  if (!key?.remoteJid || key.remoteJidAlt) return where;
   return { ...filters, key: { ...key, remoteJidAlt: key.remoteJid } };
 }
 
@@ -206,13 +208,19 @@ const tools: ToolDef[] = [
                 .string()
                 .optional()
                 .describe(
-                  "Chat JID. Also sent as remoteJidAlt (unless you pass one), so messages stored under " +
-                    "the alternate @lid/phone JID match too.",
+                  "Chat JID. Prefer the phone JID (…@s.whatsapp.net): the MCP also sends it as remoteJidAlt, so " +
+                    "messages stored under the chat's @lid form match too. With an @lid JID, messages sent through " +
+                    "the API to the phone JID (stored without remoteJidAlt) are not matched.",
                 ),
               remoteJidAlt: z
                 .string()
                 .optional()
-                .describe("Alternate chat JID (@lid <-> phone), matched against key.remoteJidAlt. Defaults to remoteJid."),
+                .describe(
+                  "Matched against the stored key.remoteJidAlt, which holds the OTHER form of the chat JID (the " +
+                    "phone JID on @lid-stored messages). Leave it unset: it defaults to remoteJid, which (with the " +
+                    "phone JID) matches both forms. Setting it to the chat's other form drops the messages stored " +
+                    "under that form.",
+                ),
               fromMe: z.boolean().optional().describe("Only true is applied (false is ignored by the server)."),
               participant: z.string().optional().describe("Group sender JID."),
             })

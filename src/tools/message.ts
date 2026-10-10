@@ -48,10 +48,11 @@ function fileNameFromUrl(media: string): string | undefined {
  * fileName to send, enforcing Evolution's prepareMediaMessage rules: a fileName always replaces
  * the mimetype with lookup(fileName) ("false" without extension); a document without one gets the
  * URL's last segment cut before its first dot ("invoice.pdf" -> "invoice"); base64 audio with
- * neither mimetype nor fileName is stored with mimetype false.
+ * neither mimetype nor fileName is stored with mimetype false. Evolution tests fileName for
+ * truthiness, so "" counts as omitted.
  */
 function mediaFileName(fields: Record<string, unknown>, media: string): string | undefined {
-  const fileName = fields.fileName as string | undefined;
+  const fileName = (fields.fileName as string | undefined) || undefined;
   if (fileName !== undefined) {
     if (!FILE_EXTENSION.test(fileName)) {
       throw new ToolInputError(
@@ -140,8 +141,10 @@ const tools: ToolDef[] = [
     handler: async (client, args) => {
       const { instance, transport, media, ...rest } = args;
       const inst = client.resolveInstance(instance as string | undefined);
+      // Only the resolved fileName is sent: an empty one is dropped, a derived one added.
+      const { fileName: _given, ...base } = rest;
       const fileName = mediaFileName(rest, media as string);
-      const fields = fileName === undefined ? rest : { ...rest, fileName };
+      const fields = fileName === undefined ? base : { ...base, fileName };
       if (transport !== "multipart") {
         return client.post(`/message/sendMedia/${inst}`, { body: { ...fields, media } });
       }

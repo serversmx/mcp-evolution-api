@@ -47,6 +47,7 @@ test("documents without a fileName that ends in an extension fail before any req
   const fetch = refuseFetch(t);
   for (const change of [
     { media: "JVBERi0xLjQK" },
+    { media: "JVBERi0xLjQK", fileName: "" },
     { media: "https://cdn.example.test/download?file=report.pdf" },
     { media: "https://cdn.example.test/files/" },
     { media: "https://cdn.example.test/files/report.pdf", fileName: "report" },
@@ -89,6 +90,56 @@ test("base64 audio needs a mimetype or a fileName with an extension; URL audio d
     { ...base, media: "SUQzBAA=", fileName: "note.mp3" },
     { ...base, media: "https://cdn.example.test/audio/stream" },
   ]);
+});
+
+// Evolution API tests fileName for truthiness (2.3.7 prepareMediaMessage, sendMedia controller),
+// so "" behaves exactly like an omitted fileName there.
+test("an empty fileName counts as omitted and is not sent", async (t) => {
+  const requests = captureFetch(t);
+  for (const args of [
+    { mediatype: "image", media: "https://cdn.example.test/p.png", caption: "hi" },
+    { mediatype: "video", media: "AAAAIGZ0eXA=" },
+    { mediatype: "audio", media: "SUQzBAA=", mimetype: "audio/mpeg" },
+  ]) {
+    await run("evolution_message_send_media", { number: "5215512345678", ...args, fileName: "" });
+  }
+  assert.deepEqual(requests.map((request) => request.body), [
+    { number: "5215512345678", mediatype: "image", media: "https://cdn.example.test/p.png", caption: "hi" },
+    { number: "5215512345678", mediatype: "video", media: "AAAAIGZ0eXA=" },
+    { number: "5215512345678", mediatype: "audio", media: "SUQzBAA=", mimetype: "audio/mpeg" },
+  ]);
+});
+
+test("a URL document with an empty fileName sends the name taken from the URL", async (t) => {
+  const requests = captureFetch(t);
+  const media = "https://cdn.example.test/files/report.pdf";
+  await run("evolution_message_send_media", { number: "5215512345678", mediatype: "document", media, fileName: "" });
+  assert.deepEqual(requests.map((request) => request.body), [
+    { number: "5215512345678", mediatype: "document", media, fileName: "report.pdf" },
+  ]);
+});
+
+test("base64 audio with an empty fileName still needs a mimetype", async (t) => {
+  const fetch = refuseFetch(t);
+  await assert.rejects(
+    run("evolution_message_send_media", { number: "5215512345678", mediatype: "audio", media: "SUQzBAA=", fileName: "" }),
+    ToolInputError,
+  );
+  assert.equal(fetch.mock.callCount(), 0);
+});
+
+test("multipart media with an empty fileName sends no fileName field and names the file part 'upload'", async (t) => {
+  let form;
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    form = init.body;
+    return new Response(JSON.stringify({ key: { id: "sent" } }), { status: 201 });
+  });
+  await run("evolution_message_send_media", {
+    number: "5215512345678", mediatype: "image", media: "AQIDBA==", transport: "multipart", fileName: "",
+  });
+  assert.ok(form instanceof FormData);
+  assert.deepEqual([...form.keys()].sort(), ["file", "mediatype", "number"]);
+  assert.equal(form.get("file").name, "upload");
 });
 
 test("poll, sticker, buttons and carousel accept mention options but never send them", async (t) => {
