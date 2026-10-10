@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- Build stage ----
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 
 # Install dependencies with a clean, reproducible install.
@@ -16,12 +16,13 @@ COPY src ./src
 RUN npm run build
 
 # ---- Runtime stage ----
-FROM node:22-alpine AS runtime
+FROM node:24-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 
+# Keep title/description in sync with the labels set in docker-publish.yml.
 LABEL org.opencontainers.image.title="evolution-api-mcp" \
-      org.opencontainers.image.description="MCP server for Evolution API v2 (WhatsApp)" \
+      org.opencontainers.image.description="MCP server for Evolution API v2 (WhatsApp) over stdio" \
       org.opencontainers.image.source="https://github.com/serversmx/mcp-evolution-api" \
       org.opencontainers.image.licenses="MIT"
 
