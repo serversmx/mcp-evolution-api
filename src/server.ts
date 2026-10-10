@@ -18,7 +18,7 @@ import { EvolutionClient, EvolutionApiError } from "./client.js";
 import { buildRegistry, type Registry } from "./registry.js";
 
 export const PKG_NAME = "evolution-api-mcp";
-export const PKG_VERSION = "0.2.0";
+export const PKG_VERSION = "0.3.0";
 
 export interface ServerDeps {
   client?: EvolutionClient;

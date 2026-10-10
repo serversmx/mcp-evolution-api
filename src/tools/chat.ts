@@ -104,7 +104,7 @@ const tools: ToolDef[] = [
     name: "evolution_chat_send_presence",
     description:
       "Show a presence indicator in a chat (composing/recording/paused) for `delay` ms; the request " +
-      "blocks for that long and then sends 'paused'.",
+      "blocks for that long (the MCP extends its HTTP timeout by the delay) and then sends 'paused'.",
     inputSchema: z.object({
       instance: instanceField,
       number: numberField,

@@ -1,6 +1,85 @@
 # Changelog
 
-## 0.2.0 — Unreleased
+## 0.3.0 — Unreleased
+
+Contrato revisado de nuevo contra Evolution API 2.3.7, 2.4.0-rc2 y `develop`
+(julio 2026), con el SDK de MCP 1.32.1. Siguen siendo 169 herramientas en 26
+grupos, 72 activas por defecto.
+
+### Seguridad y dependencias
+
+- `@modelcontextprotocol/sdk` 1.32.1 y `npm audit fix`: de 7 avisos (1 crítico,
+  3 altos) a 0. Ninguno era alcanzable desde el servidor stdio, pero viajaban en
+  la imagen Docker.
+- Node.js 22 o superior (`engines`); la imagen usa `node:24-alpine`.
+
+### Corregido
+
+- Transporte: el servidor ya no muere en silencio con mensajes MCP de más de
+  10 MiB (límite por defecto del SDK ≥ 1.30). El límite pasa a 64 MiB
+  (`EVOLUTION_MAX_MESSAGE_BYTES`) y los errores de transporte se registran en
+  stderr.
+- Las peticiones con `delay` esperan `EVOLUTION_TIMEOUT_MS + delay`. Si un envío
+  agota el tiempo, el error avisa que el mensaje puede entregarse igualmente.
+- `typebot_start` usa `startSession: true` por defecto (el modo `false` no
+  entrega mensajes en 2.3.7–develop) y exige settings de Typebot guardados.
+- `openai_creds_delete` ya no borra en cascada los bots que usan la credencial
+  (requiere `force: true`) ni intenta borrar la credencial predeterminada.
+- `settings_set` de los bots ya no convierte valores NULL guardados en
+  `keywordFinish: "bye"` o `debounceTime: 1`: solo completa equivalentes en
+  ejecución y pide `keywordFinish` (y `unknownMessage` en Typebot) de forma
+  explícita.
+- `chat_update_message` envía `key.remoteJid` como `number` (fallaba con números
+  521…/549… escritos en dígitos).
+- `chat_find_messages` incluye el JID alterno @lid/teléfono y
+  `chat_find_contacts` pagina de 50 en 50 (`page` sin `offset` daba HTTP 500).
+- `message_send_media` exige `fileName` con extensión en documentos (se toma de
+  la URL cuando es posible) y `mimetype` en audio base64; antes Evolution
+  enviaba mimetype `"false"`.
+- `message_send_contact` toma `wuid` de los dígitos del teléfono.
+- `proxy_set` envía credenciales vacías (sin ellas el proxy no se guardaba) y
+  solo admite `http`/`socks5`.
+- `instance_create` recorta y exige `instanceName`; `template_find` convierte la
+  respuesta vacía (falla de Meta) en error.
+- Los errores `[object Object]` de restart/connect/delete se sustituyen por una
+  indicación accionable.
+- Descripciones corregidas: menciones, `webhookUrl` de plantillas, carrusel,
+  `@newsletter`, perfil propio, `triggerType: "none"`, `change_status`,
+  `workflow` de Dify, `fallbackId` en Dify/n8n, `webhook_set`, SQS global y
+  nombres de credenciales OpenAI.
+
+### Añadido
+
+- `EVOLUTION_MAX_RESULT_BYTES` (4 MiB): un resultado mayor devuelve un error con
+  su tamaño y un resumen en vez de cortar la conexión de Claude Code (10 MiB).
+- Compatibilidad con `develop` (sin publicar): `group_revoke_invite` y
+  `group_leave` envían cuerpo JSON, `instance_fetch` filtra del lado del cliente
+  y los errores explican las regresiones de upstream (GET de grupos con
+  Express 5 y creación de instancias tras #2549).
+- CI: `npm test` en Node 22 y 24, publicación de la imagen condicionada a las
+  pruebas, acciones con runtime Node 24, etiquetas OCI correctas y Dependabot.
+
+### Cambios incompatibles
+
+- Los resultados son JSON compacto (sin indentación).
+- `typebot_start` sin `startSession` crea o reemplaza una sesión persistente.
+- `openai_creds_delete` rechaza credenciales en uso salvo `force: true`.
+- `settings_set` de los bots puede pedir `keywordFinish` explícito.
+- `chat_find_contacts` devuelve 50 contactos por defecto.
+- `chat_update_message`: `number` es opcional y se ignora si hay `key.remoteJid`.
+- `message_send_media` rechaza documentos sin extensión, `fileName` sin extensión
+  y audio base64 sin `mimetype`.
+- Poll, sticker, botones y carrusel ya no exponen menciones, y las tarjetas del
+  carrusel ya no tienen `title` (si se envían, se descartan sin error);
+  `mentioned: []` es inválido.
+- `proxy_set` ya no admite `https`/`socks4`; omitir las credenciales significa
+  sin autenticación.
+- `instance_create` rechaza nombres vacíos; `template_find` falla en vez de
+  devolver `null`.
+
+## 0.2.0 — 2026-09-26
+
+Publicada en `main` (imagen `:latest` y `npx`) sin tag de versión.
 
 Contrato revisado contra Evolution API 2.3.7 y 2.4.0-rc2. Se exponen 169
 herramientas en 26 grupos, con 72 herramientas activas por defecto.

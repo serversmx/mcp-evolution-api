@@ -4,13 +4,14 @@ Servidor [MCP](https://modelcontextprotocol.io) (Model Context Protocol) que exp
 la **Evolution API v2** (WhatsApp) como herramientas para clientes MCP como Claude
 Desktop, Claude Code o Cursor.
 
-Versión del servidor MCP: **0.2.0**. Consulta el [CHANGELOG](CHANGELOG.md).
+Versión del servidor MCP: **0.3.0**. Consulta el [CHANGELOG](CHANGELOG.md).
 
 - **169 herramientas** con cobertura de la API v2 (instancias, mensajes, chats,
   grupos, perfil, etiquetas, proxy, plantillas Meta, catálogo, webhooks, colas de
   eventos, Chatwoot y 7 integraciones de chatbot).
 - **Contrato verificado** contra el código fuente de Evolution API `2.3.7` y
-  `2.4.0-rc2`: método, ruta y campos obligatorios de cada herramienta.
+  `2.4.0-rc2` (y revisado contra `develop`, julio 2026): método, ruta, campos
+  obligatorios y comportamiento real de cada herramienta.
 - **TypeScript** sobre el SDK oficial, transporte **stdio**.
 - **Imagen Docker** publicada en GHCR y ejecutable con `npx` (sin clonar).
 - **Multi-instancia**: las operaciones sobre instancias aceptan `instance`; opcionalmente una
@@ -21,10 +22,18 @@ Compatible con Evolution API `2.3.7` y `2.4` (verificado contra `2.4.0-rc2`). La
 desde 2.4 lo indican en su descripción (**"Requires Evolution API 2.4+"**); en 2.3.7
 responden 404 y el error lo explica.
 
+> La rama `develop` de Evolution (futura 2.4 final, aún sin publicar) trae dos
+> regresiones de upstream: las 6 herramientas de grupo que usan GET
+> (`invite_code`, `find_info`, `participants`, `fetch_all`, `invite_info`,
+> `accept_invite`) fallan con HTTP 500 por la migración a Express 5, y crear
+> instancias falla con un 400 de clave foránea tras el fix de seguridad #2549.
+> El MCP lo explica en el mensaje de error; en 2.3.7 y 2.4.0-rc2 todo funciona.
+
 ## Requisitos
 
 - Una instancia de Evolution API v2 y su **apikey global**.
-- Para `npx` / local: Node.js 18 o superior. Para Docker: solo Docker.
+- Para `npx` / local: Node.js 22 o superior (24 LTS recomendado); la opción B
+  (`npx github:`) requiere además `git` en el PATH. Para Docker: solo Docker.
 
 ## Cómo ejecutarlo
 
@@ -98,11 +107,19 @@ Variables de entorno (ver [.env.example](.env.example)):
 | `EVOLUTION_API_KEY` | ✅ | apikey global (header `apikey`). |
 | `EVOLUTION_DEFAULT_INSTANCE` | — | Instancia usada cuando una herramienta omite `instance`. |
 | `EVOLUTION_TOOLS` | — | Allowlist de grupos separada por comas. Ver abajo. |
-| `EVOLUTION_TIMEOUT_MS` | — | Timeout por petición (default `30000`). |
+| `EVOLUTION_TIMEOUT_MS` | — | Timeout por petición (default `30000`). Las peticiones con `delay` (envíos y `chat_send_presence`) esperan timeout + delay, porque Evolution mantiene la petición abierta durante el delay. |
+| `EVOLUTION_MAX_MESSAGE_BYTES` | — | Tamaño máximo de un mensaje MCP entrante, p.ej. una llamada con media en base64 (default `67108864` = 64 MiB). Si se supera, la conexión se cierra y queda registrado en stderr. |
+| `EVOLUTION_MAX_RESULT_BYTES` | — | Tamaño máximo de un resultado (default `4194304` = 4 MiB). Uno mayor devuelve un error con su tamaño y un resumen. Mantenlo por debajo del límite del cliente: Claude Code corta los servidores con mensajes de más de 10 MiB (Claude Desktop, 32 MiB). |
 
 > ⚠️ La apikey global da **control total** sobre la instancia (crear/borrar
 > instancias, enviar mensajes, leer chats). Trátala como un secreto: nunca la
 > subas al repositorio ni la hornees en una imagen.
+
+> ⚠️ **Seguridad del servidor Evolution.** Hasta `2.4.0-rc2`, cualquiera con el
+> token de **una** instancia puede operar sobre las demás (bypass entre
+> instancias corregido solo en `develop`, #2549). No compartas tokens de
+> instancia con terceros. Además, el paquete npm `evolution-api-mcp` es **otro
+> proyecto**: este servidor se ejecuta solo con `npx -y github:serversmx/mcp-evolution-api`.
 
 ### Grupos de herramientas
 
@@ -277,7 +294,16 @@ Una vez conectado, puedes pedirle a Claude cosas como:
 - **Actualizaciones parciales seguras**: `settings_set`, `profile_update_privacy`,
   `chatwoot_set`, y `update`/`settings_set` de los bots exigen en el API todos los
   campos obligatorios. Si omites alguno, la herramienta lee la configuración
-  actual, la combina con lo que pasaste y envía el objeto completo.
+  actual, la combina con lo que pasaste y envía el objeto completo. En
+  `settings_set` de los bots, un valor guardado como NULL solo se completa con su
+  equivalente en ejecución (`delayMessage` 1000, `debounceTime` 0,
+  `ignoreJids` []); un `keywordFinish` NULL (y `unknownMessage` en Typebot) debe
+  pasarse explícitamente: la herramienta no inventa valores que cambien el
+  comportamiento del bot.
+- Los resultados se devuelven como JSON compacto. Un resultado mayor que
+  `EVOLUTION_MAX_RESULT_BYTES` devuelve un error con su tamaño y un resumen; para
+  media grande usa `message.mediaUrl` (con S3/MinIO) o el base64 de los webhooks
+  (`webhook_set` con `base64: true`) en lugar de `chat_media_base64`.
 - Los `events` de webhook/websocket/rabbitmq/sqs/nats/kafka/pusher siempre se
   envían: `[]` (por defecto) significa **todos** los eventos.
 - `message_send_media` permite `transport: "multipart"`: recibe base64 en los
@@ -285,6 +311,19 @@ Una vez conectado, puedes pedirle a Claude cosas como:
   Para `delay`, `quoted` o menciones usa el transporte `json` (por defecto):
   Evolution recibe los campos multipart como strings y rechaza esos tipos.
   Los demás envíos de media aceptan URL/base64 mediante JSON.
+- `message_send_media`: todo `fileName` debe llevar extensión (Evolution deriva
+  el mimetype de él y si no envía `"false"`); los documentos lo exigen (se toma
+  de la ruta de la URL cuando termina en extensión) y el audio base64 necesita
+  `mimetype` o `fileName`.
+- Menciones: poll, sticker, botones y carrusel no las ofrecen porque Evolution
+  nunca las aplica; `send_list` las conserva (2.3.7 las aplica, 2.4+ las ignora).
+- `chat_find_contacts` pagina de 50 en 50 por defecto (usa `page`/`offset`).
+- `typebot_start` usa `startSession: true` por defecto (el modo `false` no
+  entrega mensajes en 2.3.7–develop) y requiere settings de Typebot guardados.
+- `openai_creds_delete` no borra la credencial predeterminada de los settings ni
+  credenciales que usan bots (se borrarían en cascada) salvo con `force: true`.
+- `proxy_set` solo admite `http` y `socks5`; omitir `username`/`password` deja el
+  proxy sin autenticación.
 - Se excluyen los receptores de webhooks entrantes, las rutas internas de
   Baileys/S3, administración de licencias y `call/offer`, que es un stub y no
   realiza llamadas. Las rutas exclusivas de `develop` tampoco se exponen.
@@ -293,7 +332,8 @@ Una vez conectado, puedes pedirle a Claude cosas como:
 
 ```text
 src/
-  index.ts            Server MCP (stdio): lista y ejecuta tools
+  index.ts            Punto de entrada: transporte stdio y arranque
+  server.ts           Server MCP: lista y ejecuta tools (límite de tamaño, JSON compacto)
   config.ts           Carga/valida variables de entorno
   client.ts           Cliente HTTP de Evolution (apikey, errores, 503 de licencia, timeout)
   registry.ts         Filtra grupos según EVOLUTION_TOOLS
@@ -302,15 +342,36 @@ src/
   tools/              Un archivo por controlador + integrations/ (eventos, Chatwoot, bots)
   tools/helpers.ts    Utilidades de handlers (body, merge de configuración)
   smoke.ts            Smoke test de solo lectura
-Dockerfile            Imagen multi-stage (build + runtime no-root)
-.github/workflows/    CI (build) y publicación de la imagen en GHCR
+Dockerfile            Imagen multi-stage (build + runtime no-root, node:24-alpine)
+.github/workflows/    CI (build + pruebas en Node 22 y 24) y publicación de la imagen en GHCR
+.github/dependabot.yml  Actualizaciones semanales de dependencias (npm, Actions, Docker)
 ```
 
 Las herramientas de bots (`typebot`, `openai`, `dify`, `evolutionbot`, `flowise`,
 `n8n`, `evoai`) comparten una misma fábrica con campos tipados: los comunes
 (`enabled`, `triggerType`, `expire`, `keepOpen`, …) más los propios de cada bot
 (p.ej. `url`/`typebot`, `openaiCredsId`/`botType`, `webhookUrl`/`basicAuthPass`,
-`agentUrl`). El bot por defecto de los settings se indica con `fallbackId`.
+`agentUrl`). El bot por defecto de los settings se indica con `fallbackId`
+(Dify y n8n lo guardan pero lo ignoran en ejecución en Evolution 2.3.7–develop).
+
+### Cambios incompatibles en 0.3.0
+
+- Resultados en JSON compacto y con límite de tamaño (`EVOLUTION_MAX_RESULT_BYTES`).
+- `evolution_typebot_start`: sin `startSession` crea o reemplaza una sesión
+  persistente; falla antes de llamar al API si los settings de Typebot nunca se
+  guardaron.
+- `evolution_openai_creds_delete`: rechaza credenciales en uso salvo `force: true`.
+- `settings_set` de los bots puede pedir `keywordFinish` explícito (ver arriba).
+- `evolution_chat_find_contacts`: 50 contactos por defecto.
+- `evolution_chat_update_message`: `number` es opcional y se usa `key.remoteJid`.
+- `evolution_message_send_media`: valida `fileName`/`mimetype` antes de enviar.
+- Poll, sticker, botones y carrusel sin menciones; tarjetas del carrusel sin
+  `title` (los campos sobrantes se descartan sin error).
+- `evolution_proxy_set`: sin `https`/`socks4`; sin credenciales = sin autenticación.
+- `evolution_instance_create` rechaza nombres vacíos; `evolution_template_find`
+  falla en vez de devolver `null` cuando falla la petición a Meta.
+
+Detalle completo en el [CHANGELOG](CHANGELOG.md).
 
 ### Cambios incompatibles en 0.2.0
 
@@ -330,10 +391,12 @@ npm test         # compila y ejecuta regresiones sin conexión a un servidor
 npm start        # ejecuta el servidor (requiere env)
 ```
 
-La CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) compila con `tsc` en
-cada push/PR. Al hacer push a `main` o publicar un tag `vX.Y.Z`, la imagen se
-publica en `ghcr.io/serversmx/mcp-evolution-api`
-([docker-publish.yml](.github/workflows/docker-publish.yml)).
+La CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) compila con `tsc` y
+ejecuta `npm test` en Node 22 y 24 en cada push/PR. Al hacer push a `main` o
+publicar un tag `vX.Y.Z`, la imagen se publica en
+`ghcr.io/serversmx/mcp-evolution-api`
+([docker-publish.yml](.github/workflows/docker-publish.yml)), solo si esas
+pruebas pasan.
 
 ## Licencia
 
