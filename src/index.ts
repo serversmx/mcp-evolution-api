@@ -64,7 +64,12 @@ async function main(): Promise<void> {
     }
   });
 
-  const transport = new StdioServerTransport();
+  // The SDK closes the transport when a message exceeds maxBufferSize; without
+  // onerror the process would exit silently.
+  server.onerror = (err) => console.error(`[${PKG_NAME}] transport error: ${err.message}`);
+  const transport = new StdioServerTransport(process.stdin, process.stdout, {
+    maxBufferSize: config.maxMessageBytes,
+  });
   await server.connect(transport);
   console.error(`[${PKG_NAME}] ready (stdio)`);
 }
