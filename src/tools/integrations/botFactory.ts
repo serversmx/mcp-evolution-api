@@ -61,7 +61,10 @@ const commonBotShape = {
     .enum(["all", "keyword", "none", "advanced"])
     .describe(
       "all = every message (only ONE enabled 'all' bot per integration); keyword = triggerOperator + " +
-        "triggerValue; advanced = triggerValue expression; none = only via fallback/start.",
+        "triggerValue; advanced = triggerValue expression; none = while enabled, ALSO every message, like " +
+        "'all' (Evolution API 2.3.7–develop; not covered by the single-'all' check). For a fallback-only bot " +
+        "use enabled: false and set it as fallbackId in the settings (the fallback ignores enabled; Dify and " +
+        "n8n ignore fallbackId).",
     ),
   triggerOperator: z
     .enum(["equals", "contains", "startsWith", "endsWith", "regex"])
@@ -257,8 +260,8 @@ export function makeBotTools(spec: BotSpec): ToolDef[] {
       description:
         `Change the ${label} session status for a chat. 'paused' = bot ignores the chat (use for human ` +
         `handoff); 'opened' = resume; 'closed' = end the session; 'delete' = remove the chat's sessions. ` +
-        `WARNING: 'closed' and 'delete' affect that contact's bot sessions of every bot type on every ` +
-        `instance of the server.`,
+        `WARNING: 'opened'/'paused' apply to that chat's sessions of EVERY bot integration on this instance; ` +
+        `'closed' and 'delete' to that contact's bot sessions of every bot type on every instance of the server.`,
       inputSchema: z.object({
         instance: instanceField,
         remoteJid: z.string().describe("Chat JID of the session (full JID)."),

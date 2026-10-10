@@ -16,7 +16,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const extraTools: ToolDef[] = [
   {
     name: "evolution_openai_creds_set",
-    description: "Add an OpenAI API credential to an instance (an API key can be registered only once).",
+    description:
+      "Add an OpenAI API credential to an instance. The API key and the credential name must both be unique " +
+      "across the whole server: a reused key fails with 400, a name already used on another instance with HTTP 500.",
     inputSchema: z.object({
       instance: instanceField,
       name: z.string().describe("Credential name."),

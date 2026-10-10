@@ -11,7 +11,12 @@ export const difyGroup = makeBotGroup({
   label: "Dify",
   envFlag: "DIFY_ENABLED",
   specificShape: {
-    botType: z.enum(["chatBot", "textGenerator", "agent", "workflow"]).describe("Dify app type."),
+    botType: z
+      .enum(["chatBot", "textGenerator", "agent", "workflow"])
+      .describe(
+        "Dify app type. 'workflow' is accepted but never processed by Evolution API 2.3.7–develop: " +
+          "workflow bots never reply (use chatBot, agent or textGenerator).",
+      ),
     apiUrl: z.string().optional().describe("Dify API base URL, e.g. https://api.dify.ai/v1."),
     apiKey: z.string().optional().describe("Dify app API key."),
   },
