@@ -34,12 +34,15 @@
  *
  * idempotentHint (true on every read-only tool) is true when repeating the call with the same
  * arguments adds no effect: set-to-value updates, deletions, flags, joins and leaves, and edits or
- * deletions of a sent message, which converge. It is false for creates; for sends, because each call
- * delivers and stores a new message (the optional messageId only deduplicates on 2.4+); for
- * restarts, invite revocation (a new link each time) and chat presence (shown again); and for writes
- * after which Evolution reconnects the WhatsApp session (profile picture, privacy, instance settings
- * with a WAVoIP token), opens a new Chatwoot conversation (autoCreate) or starts a new Meta review
- * (template edits).
+ * deletions of a sent message, which converge. The group subject, permission, member-add-mode and
+ * disappearing-message setters are set-to-value: Baileys sends only the new value, with no revision id,
+ * so a repeat sets the same state. It is false for creates; for sends, because each call delivers and
+ * stores a new message (the optional messageId only deduplicates on 2.4+); for restarts, invite
+ * revocation (a new link each time) and chat presence (shown again); for group picture and description
+ * changes (each call is a new picture or a new description revision, announced to the members); and
+ * for writes after which Evolution reconnects the WhatsApp session (profile picture, privacy, instance
+ * settings with a WAVoIP token), opens a new Chatwoot conversation (autoCreate) or starts a new Meta
+ * review (template edits).
  *
  * openWorldHint is true when the call itself reaches past Evolution's database and configuration:
  * the WhatsApp network (other users, groups, profiles, media), the Meta Graph API, OpenAI, Typebot,
@@ -150,11 +153,15 @@ export const toolAnnotations: Readonly<Record<string, ToolHints>> = {
   evolution_label_find: read("List labels", "closed-world"),
   evolution_label_handle: write("Add or remove chat label", "non-destructive", "idempotent", "open-world"),
 
-  // Groups. Changes are announced to the members; invite_code reads the current link.
+  // Groups. Changes are announced to the members; invite_code reads the current link. Picture and
+  // description changes are not idempotent: each call is a new picture or a new description revision
+  // (Evolution uploads the picture again, Baileys gives each description a fresh id), announced to the
+  // members. The subject, permission, member-add-mode and disappearing-message setters send only the
+  // new value, with no revision id, so a repeat converges on the same state.
   evolution_group_create: write("Create group", "destructive", "not-idempotent", "open-world"),
-  evolution_group_update_picture: write("Update group picture", "destructive", "idempotent", "open-world"),
+  evolution_group_update_picture: write("Update group picture", "destructive", "not-idempotent", "open-world"),
   evolution_group_update_subject: write("Rename group", "destructive", "idempotent", "open-world"),
-  evolution_group_update_description: write("Update group description", "destructive", "idempotent", "open-world"),
+  evolution_group_update_description: write("Update group description", "destructive", "not-idempotent", "open-world"),
   evolution_group_invite_code: read("Get group invite link", "open-world"),
   evolution_group_revoke_invite: write("Revoke group invite link", "destructive", "not-idempotent", "open-world"),
   evolution_group_accept_invite: write("Join group by invite", "destructive", "idempotent", "open-world"),
