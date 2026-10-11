@@ -7,13 +7,27 @@ export interface EvolutionConfig {
   apiKey: string;
   defaultInstance?: string;
   timeoutMs: number;
-  /** Largest incoming stdio message (bytes) before the transport rejects it. */
+  /** Largest incoming message (bytes): stdio line or HTTP request body. */
   maxMessageBytes: number;
   /** Largest serialized tool result (bytes) returned to the client. */
   maxResultBytes: number;
   /** Raw allowlist string from EVOLUTION_TOOLS (parsed by the registry). */
   toolsAllowlist?: string;
 }
+
+export type Transport = "stdio" | "http";
+
+/** MCP_TRANSPORT: stdio (default) or http (Streamable HTTP, see http.ts). */
+export function loadTransport(env: NodeJS.ProcessEnv = process.env): Transport {
+  const transport = env.MCP_TRANSPORT?.trim().toLowerCase() || "stdio";
+  if (transport !== "stdio" && transport !== "http") {
+    throw new Error(`MCP_TRANSPORT must be "stdio" or "http", got: ${env.MCP_TRANSPORT}`);
+  }
+  return transport;
+}
+
+/** claude.ai caps a tool result at about 150,000 characters; stdio clients accept far more. */
+const DEFAULT_RESULT_BYTES: Record<Transport, number> = { stdio: 4 * 1024 * 1024, http: 150000 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): EvolutionConfig {
   const baseUrl = env.EVOLUTION_BASE_URL?.trim();
@@ -42,7 +56,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EvolutionConfi
     defaultInstance: env.EVOLUTION_DEFAULT_INSTANCE?.trim() || undefined,
     timeoutMs,
     maxMessageBytes: byteLimit(env, "EVOLUTION_MAX_MESSAGE_BYTES", 64 * 1024 * 1024),
-    maxResultBytes: byteLimit(env, "EVOLUTION_MAX_RESULT_BYTES", 4 * 1024 * 1024),
+    maxResultBytes: byteLimit(env, "EVOLUTION_MAX_RESULT_BYTES", DEFAULT_RESULT_BYTES[loadTransport(env)]),
     toolsAllowlist: env.EVOLUTION_TOOLS?.trim() || undefined,
   };
 }
