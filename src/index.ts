@@ -1,24 +1,39 @@
 #!/usr/bin/env node
 /**
- * Evolution API MCP server (stdio).
+ * Evolution API MCP server.
  *
  * Exposes Evolution API v2 endpoints as MCP tools. Tool groups are selected via
  * the EVOLUTION_TOOLS env var (see config.ts / .env.example).
+ *
+ * Transport: stdio by default; MCP_TRANSPORT=http serves Streamable HTTP (see http.ts).
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
-import { loadConfig } from "./config.js";
+import { loadConfig, loadTransport } from "./config.js";
 import { buildRegistry } from "./registry.js";
 import { PKG_NAME, createServer } from "./server.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  const mode = loadTransport();
   const registry = buildRegistry(config);
 
   console.error(
     `[${PKG_NAME}] ${registry.tools.length} tools from groups: ${registry.enabledGroups.join(", ")}`,
   );
+
+  if (mode === "http") {
+    // Loaded lazily so stdio users never import express or jose.
+    const { loadHttpConfig, startHttp } = await import("./http.js");
+    const http = loadHttpConfig();
+    await startHttp(config, registry, http);
+    console.error(
+      `[${PKG_NAME}] ready (http) on ${http.host}:${http.port}${http.path} auth=${http.auth.mode}` +
+        (http.resource ? ` public=${http.resource}` : ""),
+    );
+    return;
+  }
 
   const server = createServer(config, { registry });
 
