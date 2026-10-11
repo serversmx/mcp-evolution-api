@@ -4,7 +4,7 @@ Servidor [MCP](https://modelcontextprotocol.io) (Model Context Protocol) que exp
 la **Evolution API v2** (WhatsApp) como herramientas para clientes MCP como Claude
 Desktop, Claude Code o Cursor.
 
-Versión del servidor MCP: **0.3.0**. Consulta el [CHANGELOG](CHANGELOG.md).
+Versión del servidor MCP: **0.4.0**. Consulta el [CHANGELOG](CHANGELOG.md).
 
 - **169 herramientas** con cobertura de la API v2 (instancias, mensajes, chats,
   grupos, perfil, etiquetas, proxy, plantillas Meta, catálogo, webhooks, colas de
@@ -12,7 +12,8 @@ Versión del servidor MCP: **0.3.0**. Consulta el [CHANGELOG](CHANGELOG.md).
 - **Contrato verificado** contra el código fuente de Evolution API `2.3.7` y
   `2.4.0-rc2` (y revisado contra `develop`, julio 2026): método, ruta, campos
   obligatorios y comportamiento real de cada herramienta.
-- **TypeScript** sobre el SDK oficial, transporte **stdio**.
+- **TypeScript** sobre el SDK oficial, transporte **stdio** o **Streamable HTTP** (modo remoto
+  para ChatGPT y Claude, con autenticación por token u OAuth).
 - **Imagen Docker** publicada en GHCR y ejecutable con `npx` (sin clonar).
 - **Multi-instancia**: las operaciones sobre instancias aceptan `instance`; opcionalmente una
   instancia por defecto.
@@ -99,6 +100,27 @@ cp .env.example .env   # edita tus credenciales
 npm start
 ```
 
+### Opción D — Servidor remoto (HTTP) para ChatGPT y Claude
+
+ChatGPT y las apps de Claude (web, escritorio y móvil) se conectan desde su nube, así que necesitan
+el servidor en una URL pública con HTTPS, por ejemplo como App de Easypanel junto a tu Evolution API.
+La misma imagen Docker sirve Streamable HTTP con solo definir variables de entorno:
+
+```dotenv
+MCP_TRANSPORT=http
+MCP_PUBLIC_URL=https://mcp-evo.tu-dominio.com/mcp
+MCP_AUTH_TOKEN=<openssl rand -hex 32>     # fase 1: Claude Code / MCP Inspector
+# fase 2 (ChatGPT y claude.ai): MCP_AUTH_MODE=oauth + MCP_OAUTH_ISSUER + MCP_OAUTH_ALLOWED_SUBJECTS
+EVOLUTION_BASE_URL=...
+EVOLUTION_API_KEY=...
+EVOLUTION_TOOLS=message,chat
+```
+
+El modo HTTP no arranca sin autenticación. ChatGPT no puede enviar API keys ni encabezados, por eso
+la fase 2 usa OAuth con un proveedor externo (la guía usa WorkOS AuthKit). Guía completa paso a paso
+(Easypanel, Cloudflare, OAuth, ChatGPT, Claude, seguridad y solución de problemas):
+**[docs/remote-deployment.md](docs/remote-deployment.md)**.
+
 ## Configuración
 
 Variables de entorno (ver [.env.example](.env.example)):
@@ -111,7 +133,8 @@ Variables de entorno (ver [.env.example](.env.example)):
 | `EVOLUTION_TOOLS` | — | Allowlist de grupos separada por comas. Ver abajo. |
 | `EVOLUTION_TIMEOUT_MS` | — | Timeout por petición (default `30000`). Las peticiones con `delay` (envíos y `chat_send_presence`) esperan timeout + delay, porque Evolution mantiene la petición abierta durante el delay. |
 | `EVOLUTION_MAX_MESSAGE_BYTES` | — | Tamaño máximo de un mensaje MCP entrante, p.ej. una llamada con media en base64 (default `67108864` = 64 MiB). Si se supera, la conexión se cierra y queda registrado en stderr. |
-| `EVOLUTION_MAX_RESULT_BYTES` | — | Tamaño máximo de un resultado (default `4194304` = 4 MiB). En uno mayor, los textos de más de 64 KiB (p.ej. el base64 que devuelve un envío de media) se sustituyen por `<omitted: N bytes>`; solo es un error si eso no basta, y siempre en `chat_media_base64`. Mantenlo por debajo del límite del cliente: Claude Code corta los servidores con mensajes de más de 10 MiB (Claude Desktop, 32 MiB). |
+| `MCP_TRANSPORT` y `MCP_*` | — | Modo remoto (HTTP) y su autenticación: ver la [Opción D](#opción-d--servidor-remoto-http-para-chatgpt-y-claude) y [.env.example](.env.example). |
+| `EVOLUTION_MAX_RESULT_BYTES` | — | Tamaño máximo de un resultado (default `4194304` = 4 MiB; `150000` en modo HTTP). En uno mayor, los textos de más de 64 KiB (p.ej. el base64 que devuelve un envío de media) se sustituyen por `<omitted: N bytes>`; solo es un error si eso no basta, y siempre en `chat_media_base64`. Mantenlo por debajo del límite del cliente: Claude Code corta los servidores con mensajes de más de 10 MiB (Claude Desktop, 32 MiB). |
 
 > ⚠️ La apikey global da **control total** sobre la instancia (crear/borrar
 > instancias, enviar mensajes, leer chats). Trátala como un secreto: nunca la
@@ -283,6 +306,10 @@ Una vez conectado, puedes pedirle a Claude cosas como:
 ## Convenciones de las herramientas
 
 - Nombre: `evolution_<grupo>_<acción>` (p.ej. `evolution_message_send_text`).
+- Cada herramienta publica un `title` y anotaciones MCP (`readOnlyHint`, `destructiveHint`,
+  `idempotentHint`, `openWorldHint`) desde [src/tools/annotations.ts](src/tools/annotations.ts):
+  ChatGPT y Claude ejecutan las lecturas sin pedir confirmación y la piden antes de enviar mensajes o
+  borrar.
 - Las herramientas que operan sobre una instancia aceptan `instance`
   (opcional si hay `EVOLUTION_DEFAULT_INSTANCE`).
 - Los `number` aceptan dígitos con código de país o JID completo
@@ -353,7 +380,8 @@ Una vez conectado, puedes pedirle a Claude cosas como:
 
 ```text
 src/
-  index.ts            Punto de entrada: transporte stdio y arranque
+  index.ts            Punto de entrada: stdio (por defecto) o HTTP según MCP_TRANSPORT
+  http.ts             Modo remoto: Streamable HTTP sin estado, auth bearer/OAuth, /health
   server.ts           Server MCP: lista y ejecuta tools (límite de tamaño, JSON compacto)
   config.ts           Carga/valida variables de entorno
   client.ts           Cliente HTTP de Evolution (apikey, errores, 503 de licencia, timeout)
@@ -362,7 +390,9 @@ src/
   schemas/common.ts   Fragmentos zod reutilizables
   tools/              Un archivo por controlador + integrations/ (eventos, Chatwoot, bots)
   tools/helpers.ts    Utilidades de handlers (body, merge de configuración)
+  tools/annotations.ts  Título y anotaciones MCP de cada herramienta
   smoke.ts            Smoke test de solo lectura
+docs/remote-deployment.md  Guía del modo remoto (Easypanel, Cloudflare, OAuth, ChatGPT, Claude)
 Dockerfile            Imagen multi-stage (build + runtime no-root, node:24-alpine)
 .github/workflows/    CI (build + pruebas en Node 22 y 24) y publicación de la imagen en GHCR
 .github/dependabot.yml  Actualizaciones semanales de dependencias (npm, Actions, Docker)

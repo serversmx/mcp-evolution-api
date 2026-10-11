@@ -632,10 +632,10 @@ test("HTTP settings default to 127.0.0.1:3000/mcp and fall back to PORT when MCP
 
 test("MCP_ALLOWED_HOSTS replaces the hosts derived from MCP_PUBLIC_URL and tolerates ports and schemes", async () => {
   const { loadHttpConfig } = await import("../dist/http.js");
-  const env = { MCP_AUTH_TOKEN: "t".repeat(32), MCP_PUBLIC_URL: "https://mcp-evo.convo.chat/mcp" };
-  assert.deepEqual(loadHttpConfig(env).allowedHosts, ["mcp-evo.convo.chat", "localhost", "127.0.0.1"]);
-  const explicit = loadHttpConfig({ ...env, MCP_ALLOWED_HOSTS: "MCP-Evo.Convo.Chat:443, https://evo.example.com/mcp" });
-  assert.deepEqual(explicit.allowedHosts, ["mcp-evo.convo.chat", "evo.example.com"]);
+  const env = { MCP_AUTH_TOKEN: "t".repeat(32), MCP_PUBLIC_URL: "https://mcp-evo.example.com/mcp" };
+  assert.deepEqual(loadHttpConfig(env).allowedHosts, ["mcp-evo.example.com", "localhost", "127.0.0.1"]);
+  const explicit = loadHttpConfig({ ...env, MCP_ALLOWED_HOSTS: "MCP-Evo.Example.Com:443, https://evo.example.com/mcp" });
+  assert.deepEqual(explicit.allowedHosts, ["mcp-evo.example.com", "evo.example.com"]);
 });
 
 test("HTTP settings that could never work or would weaken auth are rejected at startup", async () => {

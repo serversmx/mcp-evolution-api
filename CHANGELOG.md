@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.4.0 — Unreleased
+
+Modo remoto para usar el servidor desde ChatGPT y las apps de Claude, y anotaciones MCP en todas las
+herramientas. Guía completa en [docs/remote-deployment.md](docs/remote-deployment.md).
+
+### Añadido
+
+- Modo HTTP opcional (`MCP_TRANSPORT=http`): Streamable HTTP sin estado (un Server y un transporte
+  nuevos por petición) para conectores remotos de Claude, Claude Code y ChatGPT. stdio sigue siendo el
+  modo por defecto y no carga express ni jose.
+- El modo HTTP no arranca sin una decisión de autenticación explícita: `bearer` (`MCP_AUTH_TOKEN`,
+  uno o varios tokens de al menos 32 caracteres separados por comas para rotarlos, comparados como
+  digest SHA-256 en tiempo constante), `oauth` (servidor de recursos para un IdP externo) o `none`,
+  solo con `MCP_ALLOW_UNAUTHENTICATED=true` detrás de un gateway que autentique.
+- OAuth: valida issuer, audience (`MCP_PUBLIC_URL` por defecto), expiración con 30 s de tolerancia,
+  los `sub` permitidos (`MCP_OAUTH_ALLOWED_SUBJECTS`) y scopes opcionales; JWKS de
+  `MCP_OAUTH_JWKS_URL` o por descubrimiento OIDC/RFC 8414. Metadatos RFC 9728 en
+  `/.well-known/oauth-protected-resource<ruta>` y en la raíz; 401 con `WWW-Authenticate` y
+  `resource_metadata`; 500 sin desafío si el IdP no responde. El log explica cada rechazo sin mostrar
+  el token.
+- Protecciones HTTP: Host validado, Origin fuera de `MCP_ALLOWED_ORIGINS` → 403, GET/DELETE → 405,
+  cuerpo limitado por `EVOLUTION_MAX_MESSAGE_BYTES` (413), `/health` sin token, log de acceso sin
+  cabeceras ni cuerpos y apagado ordenado con SIGTERM.
+- En modo HTTP, `EVOLUTION_MAX_RESULT_BYTES` vale 150000 por defecto (claude.ai limita cada resultado
+  a unos 150 000 caracteres); por stdio sigue en 4 MiB.
+- Imagen Docker: `MCP_HOST=0.0.0.0`, `MCP_PORT=3000`, `EXPOSE 3000` y un `HEALTHCHECK` sobre
+  `/health` que no hace nada en modo stdio. En Easypanel basta con las variables de entorno.
+- Anotaciones MCP en las 169 herramientas (`title`, `readOnlyHint`, `destructiveHint`,
+  `idempotentHint`, `openWorldHint`) desde un mapa explícito en `src/tools/annotations.ts`: las 65
+  lecturas no piden confirmación en ChatGPT y Claude puede ejecutarlas sin preguntar; las 79
+  destructivas (borrados, logout, bloqueos, sobrescribir configuración y cualquier envío a terceros)
+  siempre piden confirmación.
+- Dependencias directas nuevas: express 5.2.1 y jose 6.2.3.
+
 ## 0.3.0 — Unreleased
 
 Contrato revisado de nuevo contra Evolution API 2.3.7, 2.4.0-rc2 y `develop`
