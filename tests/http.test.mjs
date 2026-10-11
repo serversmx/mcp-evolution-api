@@ -343,6 +343,25 @@ describe("HTTP mode with static bearer tokens", { timeout: 20000 }, () => {
     assert.match(res.headers.get("content-type"), /^application\/json/);
   });
 
+  test("health, rejections, 404 and 405 carry Cache-Control: no-store", async () => {
+    // A CDN that caches GETs unless the origin says otherwise would replay a stale /health, or a 404
+    // for the OAuth metadata, long after the server changed.
+    const wrongHost = await rawRequest(port, { headers: { ...mcpHeaders, host: "evil.example" }, body: JSON.stringify(initialize) });
+    assert.equal(wrongHost.status, 403);
+    assert.equal(wrongHost.headers["cache-control"], "no-store", "403 Host");
+    const responses = [
+      ["health", 200, await fetch(`http://127.0.0.1:${port}/health`)],
+      ["no token", 401, await post(url)],
+      ["Origin", 403, await post(url, { ...bearer(tokens[0]), origin: "https://evil.example" })],
+      ["OAuth metadata in bearer mode", 404, await fetch(`http://127.0.0.1:${port}/.well-known/oauth-protected-resource/mcp`)],
+      ["GET", 405, await fetch(url, { headers: bearer(tokens[0]) })],
+    ];
+    for (const [name, status, res] of responses) {
+      assert.equal(res.status, status, name);
+      assert.equal(res.headers.get("cache-control"), "no-store", name);
+    }
+  });
+
   test("SIGTERM exits 0; stdout stays empty and the access log has no tokens or bodies", async () => {
     const marker = `body-marker-${randomBytes(8).toString("hex")}`;
     const send = rpc(2, "tools/call", { name: "evolution_message_send_text", arguments: { number: "15551234567", text: marker } });
@@ -392,6 +411,7 @@ describe("HTTP mode as an OAuth resource server (OIDC discovery)", { timeout: 20
     for (const path of ["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource"]) {
       const res = await fetch(`http://127.0.0.1:${port}${path}`);
       assert.equal(res.status, 200, path);
+      assert.equal(res.headers.get("cache-control"), "no-store", path);
       const metadata = await res.json();
       assert.equal(metadata.resource, url, path);
       assert.deepEqual(metadata.authorization_servers, [idp.issuer], path);

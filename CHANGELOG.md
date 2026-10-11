@@ -26,6 +26,9 @@ herramientas. Guía completa en [docs/remote-deployment.md](docs/remote-deployme
   `scheme://host[:puerto]`, y cada rechazo de Host u Origin queda en el log con su valor), GET/DELETE → 405,
   cuerpo limitado por `EVOLUTION_MAX_MESSAGE_BYTES` (413), `/health` sin token, log de acceso sin
   cabeceras ni cuerpos y apagado ordenado con SIGTERM.
+- Todas las respuestas llevan `Cache-Control: no-store`: un CDN que guarda los GET por defecto (p. ej.
+  una regla de caché de Cloudflare que respeta al origen) no puede servir un `/health` viejo ni un 404
+  de los metadatos OAuth después de un cambio.
 - En modo HTTP, `EVOLUTION_MAX_RESULT_BYTES` vale 150000 por defecto (claude.ai limita cada resultado
   a unos 150 000 caracteres); por stdio sigue en 4 MiB.
 - Imagen Docker: `MCP_HOST=0.0.0.0`, `EXPOSE 3000` y un `HEALTHCHECK` sobre `/health` que no hace

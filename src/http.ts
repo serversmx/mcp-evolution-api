@@ -517,6 +517,13 @@ export async function startHttp(config: EvolutionConfig, registry: Registry, htt
   const app = express();
   app.disable("x-powered-by");
 
+  // No cache may replay a response: a CDN that stores GETs by default would otherwise keep serving a
+  // stale /health, or a 404 for the OAuth metadata, long after the server changed.
+  app.use((_req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    next();
+  });
+
   // Access log on stderr: method, path, status, duration. Never headers or bodies (tokens, messages).
   app.use((req, res, next) => {
     if (req.path === "/health") return next(); // container healthchecks every 30 s
