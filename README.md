@@ -40,8 +40,9 @@ responden 404 y el error lo explica.
 
 ## Cómo ejecutarlo
 
-Hay tres formas, de la más simple a la más manual. Todas necesitan las mismas
-variables de entorno (ver [Configuración](#configuración)).
+Hay cuatro formas: tres locales (de la más simple a la más manual) y una remota para ChatGPT y
+Claude. Todas necesitan las variables de entorno de [Configuración](#configuración); la Opción D
+agrega las `MCP_*`.
 
 ### Opción A — Docker (recomendada)
 
@@ -55,8 +56,9 @@ docker run -i --rm \
   ghcr.io/serversmx/mcp-evolution-api:latest
 ```
 
-> El servidor habla MCP por **stdio**, por eso `docker run` usa `-i` (mantiene
-> stdin abierto). No expone puertos.
+> En modo stdio (el de esta opción) el servidor habla MCP por **stdio**, por eso
+> `docker run` usa `-i` (mantiene stdin abierto) y no publica puertos. El modo HTTP usa el
+> puerto 3000: ver la [Opción D](#opción-d--servidor-remoto-http-para-chatgpt-y-claude).
 
 > ℹ️ La imagen es **multi-arquitectura** (`linux/amd64` + `linux/arm64`): corre
 > nativa en Macs Apple Silicon e Intel y en servidores Linux. Al publicarse por
@@ -109,8 +111,10 @@ La misma imagen Docker sirve Streamable HTTP con solo definir variables de entor
 ```dotenv
 MCP_TRANSPORT=http
 MCP_PUBLIC_URL=https://mcp-evo.tu-dominio.com/mcp
-MCP_AUTH_TOKEN=<openssl rand -hex 32>     # fase 1: Claude Code / MCP Inspector
+# fase 1 (Claude Code / MCP Inspector): token estático
+MCP_AUTH_TOKEN=<salida de: openssl rand -hex 32>
 # fase 2 (ChatGPT y claude.ai): MCP_AUTH_MODE=oauth + MCP_OAUTH_ISSUER + MCP_OAUTH_ALLOWED_SUBJECTS
+MCP_ALLOWED_ORIGINS=https://claude.ai,https://chatgpt.com
 EVOLUTION_BASE_URL=...
 EVOLUTION_API_KEY=...
 EVOLUTION_TOOLS=message,chat
@@ -132,7 +136,7 @@ Variables de entorno (ver [.env.example](.env.example)):
 | `EVOLUTION_DEFAULT_INSTANCE` | — | Instancia usada cuando una herramienta omite `instance`. |
 | `EVOLUTION_TOOLS` | — | Allowlist de grupos separada por comas. Ver abajo. |
 | `EVOLUTION_TIMEOUT_MS` | — | Timeout por petición (default `30000`). Las peticiones con `delay` (envíos y `chat_send_presence`) esperan timeout + delay, porque Evolution mantiene la petición abierta durante el delay. |
-| `EVOLUTION_MAX_MESSAGE_BYTES` | — | Tamaño máximo de un mensaje MCP entrante, p.ej. una llamada con media en base64 (default `67108864` = 64 MiB). Si se supera, la conexión se cierra y queda registrado en stderr. |
+| `EVOLUTION_MAX_MESSAGE_BYTES` | — | Tamaño máximo de un mensaje MCP entrante, p.ej. una llamada con media en base64 (default `67108864` = 64 MiB). Si se supera, la conexión se cierra y queda registrado en stderr; en modo HTTP la petición recibe 413. |
 | `MCP_TRANSPORT` y `MCP_*` | — | Modo remoto (HTTP) y su autenticación: ver la [Opción D](#opción-d--servidor-remoto-http-para-chatgpt-y-claude) y [.env.example](.env.example). |
 | `EVOLUTION_MAX_RESULT_BYTES` | — | Tamaño máximo de un resultado (default `4194304` = 4 MiB; `150000` en modo HTTP). En uno mayor, los textos de más de 64 KiB (p.ej. el base64 que devuelve un envío de media) se sustituyen por `<omitted: N bytes>`; solo es un error si eso no basta, y siempre en `chat_media_base64`. Mantenlo por debajo del límite del cliente: Claude Code corta los servidores con mensajes de más de 10 MiB (Claude Desktop, 32 MiB). |
 

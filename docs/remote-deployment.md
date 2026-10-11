@@ -30,19 +30,19 @@ computadora (lo pide MCP Inspector 2.x); `jq` para algunos comandos.
 | Variable | Valor en esta guía | Notas |
 |---|---|---|
 | `MCP_TRANSPORT` | `http` | Default `stdio`. |
-| `MCP_PUBLIC_URL` | `https://mcp-evo.tu-dominio.com/mcp` | Tal cual la escribes en Claude y ChatGPT (sin `/` final). Es el `resource` de RFC 9728 y la audiencia por defecto. |
+| `MCP_PUBLIC_URL` | `https://mcp-evo.tu-dominio.com/mcp` | Tal cual la escribes en Claude y ChatGPT (sin `/` final). Es el `resource` de RFC 9728 y la audiencia por defecto. Sin ruta (`https://mcp.tu-dominio.com`), el `resource` se anuncia sin `/` final y se aceptan tokens con `aud` con o sin ella. |
 | `MCP_HOST` | no definir | Default `127.0.0.1`; la imagen Docker fija `0.0.0.0`. |
-| `MCP_PORT` / `PORT` | no definir | Default `3000` (puerto destino del dominio en Easypanel). |
+| `MCP_PORT` / `PORT` | no definir | El puerto es `MCP_PORT`; si no está, `PORT` (lo inyectan plataformas como Cloud Run, Heroku o Render); si tampoco, `3000`, el puerto destino del dominio en Easypanel, que no inyecta `PORT`. |
 | `MCP_PATH` | no definir | Default: el path de `MCP_PUBLIC_URL` (`/mcp`). |
 | `MCP_ALLOWED_HOSTS` | no definir | Default: el host de `MCP_PUBLIC_URL` más `localhost` y `127.0.0.1`. Si lo defines, **reemplaza** ese default: incluye `mcp-evo.tu-dominio.com`. |
-| `MCP_ALLOWED_ORIGINS` | `https://claude.ai,https://chatgpt.com` | Precaución: una petición con un header `Origin` fuera de la lista recibe 403. La autenticación sigue siendo obligatoria. |
+| `MCP_ALLOWED_ORIGINS` | `https://claude.ai,https://chatgpt.com` | Una petición con un header `Origin` fuera de la lista recibe 403 y el log muestra `rejected Origin "<valor>": not in MCP_ALLOWED_ORIGINS`. Se compara como `scheme://host[:puerto]`: `https://claude.ai/` y `https://Claude.ai` coinciden con `https://claude.ai`. La autenticación sigue siendo obligatoria. |
 | `MCP_JSON_RESPONSE` | no definir | Deja SSE (default) detrás de Cloudflare (ver 3.5). |
 | `MCP_SHUTDOWN_TIMEOUT_MS` | no definir | Tiempo de drenado al detenerse. |
 | `MCP_AUTH_MODE` | fase 1: no definir (se infiere `bearer`); fase 2: `oauth` | Se infiere de `MCP_AUTH_TOKEN` / `MCP_OAUTH_ISSUER`. `none` exige `MCP_ALLOW_UNAUTHENTICATED=true`: **nunca** en un dominio público. |
 | `MCP_AUTH_TOKEN` | fase 1: salida de `openssl rand -hex 32` | Lista separada por comas, cada token ≥ 32 caracteres; solo letras, dígitos y `- . _ ~ + /` (con `=` al final). La lista sirve para rotar. Si también defines `MCP_OAUTH_ISSUER`, fija `MCP_AUTH_MODE` o el servidor no arranca. |
 | `MCP_OAUTH_ISSUER` | fase 2: `https://<tu-dominio>.authkit.app` | Sin `/` final. Debe ser idéntico al `iss` de los tokens y al `issuer` de la metadata de AuthKit. |
 | `MCP_OAUTH_AUDIENCE` | no definir | Default = `MCP_PUBLIC_URL`; debe coincidir con el Resource Indicator de WorkOS. |
-| `MCP_OAUTH_JWKS_URL` | opcional: `https://<tu-dominio>.authkit.app/oauth2/jwks` | Si no se define, se descubre desde el issuer. |
+| `MCP_OAUTH_JWKS_URL` | opcional: `https://<tu-dominio>.authkit.app/oauth2/jwks` | Si no se define, se descubre desde el issuer. Exige https; http plano solo hacia loopback, un nombre de una sola etiqueta (un servicio Docker, p. ej. `http://keycloak:8080/...`), un nombre `.internal`/`.local` o una IP RFC 1918/ULA. |
 | `MCP_OAUTH_REQUIRED_SCOPES` | no definir | WorkOS solo da `openid profile email offline_access` a clientes CIMD/DCR. |
 | `MCP_OAUTH_ALLOWED_SUBJECTS` | fase 2: tu ID de WorkOS (`user_01…`) | Lista de `sub` permitidos. Es el control que importa. |
 | `MCP_OAUTH_ALLOW_ANY_SUBJECT` | **nunca** `true` aquí | Cualquiera que consiga una cuenta en tu entorno de AuthKit obtendría tokens válidos. |
@@ -390,25 +390,26 @@ pasan tus chats de WhatsApp.
 
 | Síntoma | Causa probable | Qué hacer |
 |---|---|---|
-| El contenedor se reinicia; el log muestra `fatal: …` | Falta `EVOLUTION_BASE_URL` o `EVOLUTION_API_KEY`; `MCP_PUBLIC_URL` sin https o con query string; token de menos de 32 caracteres o con caracteres no permitidos; `MCP_AUTH_TOKEN` y `MCP_OAUTH_ISSUER` definidos sin `MCP_AUTH_MODE`; `oauth` sin `MCP_OAUTH_ALLOWED_SUBJECTS`; `none` sin `MCP_ALLOW_UNAUTHENTICATED` | Corrige la variable que indica el log y vuelve a desplegar. |
+| El contenedor se reinicia; el log muestra `fatal: …` | Falta `EVOLUTION_BASE_URL` o `EVOLUTION_API_KEY`; `MCP_PUBLIC_URL` sin https o con query string; token de menos de 32 caracteres o con caracteres no permitidos; `MCP_AUTH_TOKEN` y `MCP_OAUTH_ISSUER` definidos sin `MCP_AUTH_MODE`; `oauth` sin `MCP_OAUTH_ALLOWED_SUBJECTS`; `none` sin `MCP_ALLOW_UNAUTHENTICATED`; `MCP_OAUTH_JWKS_URL` con http plano hacia un host público | Corrige la variable que indica el log y vuelve a desplegar. |
 | 502/504 de Traefik | Puerto destino distinto de 3000, o el proceso escucha en `127.0.0.1` (build sin el Dockerfile) | Domains → puerto `3000`; `MCP_HOST=0.0.0.0`. |
 | 526 | Sin certificado válido en el origen bajo Full (strict) | Sección 3.2. |
-| 403 con página de Cloudflare (header `cf-ray`) | Bot Fight Mode, regla WAF, Browser Integrity Check, AI bots o Under Attack | Security → Analytics → Events; regla Skip (3.4); apaga Bot Fight Mode. |
-| 403 `Invalid Host` | Entraste por otro hostname (p. ej. el dominio automático de Easypanel) | Usa `mcp-evo.tu-dominio.com` o agrégalo a `MCP_ALLOWED_HOSTS`. |
-| 403 `Origin not allowed: X` | El cliente envía el header `Origin: X` | Agrega X a `MCP_ALLOWED_ORIGINS`. |
+| 403 con una página **HTML** de Cloudflare (bloqueo o reto, a veces con el header `cf-mitigated: challenge`) | Bot Fight Mode, regla WAF, Browser Integrity Check, AI bots o Under Attack | Security → Analytics → Events; regla Skip (3.4); apaga Bot Fight Mode. Los 403 del propio servidor son JSON-RPC, no HTML (filas siguientes). |
+| 403 `Invalid Host`; el log muestra `rejected Host "<valor>": not in MCP_ALLOWED_HOSTS / MCP_PUBLIC_URL` | Entraste por otro hostname (p. ej. el dominio automático de Easypanel). El valor del log es el header `Host` tal cual, con puerto | Usa `mcp-evo.tu-dominio.com` o agrégalo a `MCP_ALLOWED_HOSTS`. |
+| 403; el log muestra `rejected Origin "X": not in MCP_ALLOWED_ORIGINS` | El cliente envía `Origin: X` y X no está en la lista (la `/` final y las mayúsculas no importan) | Agrega X a `MCP_ALLOWED_ORIGINS` y vuelve a desplegar. |
 | 401 con token en la fase 1 | Token distinto, espacio o salto de línea al pegar, o falta el prefijo `Bearer` (con su espacio) | Vuelve a copiarlo; `claude mcp list` avisa de espacios ocultos. |
-| 401 en bucle después de iniciar sesión (fase 2) | `error_description="Token subject is not allowed…"`: tu `sub` no está en `MCP_OAUTH_ALLOWED_SUBJECTS`. `"Invalid access token"`: `aud` distinto de `MCP_PUBLIC_URL` (Resource Indicator ausente o diferente), `iss` distinto, o token vencido. También puede ser la URL del conector con `/` final. | Revisa 5.3 y 6, y vuelve a agregar el conector. Claude guarda la metadata unos 5 minutos. |
-| 500 en la fase 2 (`Could not discover jwks_uri…` o `JWKS unavailable`) | `MCP_OAUTH_ISSUER` no coincide exacto con el `issuer` de AuthKit (p. ej. `/` final), o el contenedor no tiene salida a internet | Copia el issuer de la metadata (5.4). Define `MCP_OAUTH_JWKS_URL` solo si el problema es el discovery: el `iss` del token debe coincidir de todos modos. |
+| 401 en bucle después de iniciar sesión (fase 2); el log muestra `token rejected: unexpected "aud" claim value`, `unexpected "iss" claim value` o `"exp" claim timestamp check failed` | `aud` distinto de `MCP_PUBLIC_URL` (Resource Indicator ausente o diferente), `iss` distinto, o token vencido. También puede ser la URL del conector con `/` final (con ruta). Un token sin `sub` también da 401 (`token rejected: sub null is not in MCP_OAUTH_ALLOWED_SUBJECTS`) | Revisa 5.3 y 6, y vuelve a agregar el conector. Claude guarda la metadata unos 5 minutos. Con `curl` verás el `error_description` en el header `WWW-Authenticate`. |
+| 403 después de iniciar sesión (fase 2); el log muestra `token rejected: sub "user_01…" is not in MCP_OAUTH_ALLOWED_SUBJECTS` | Entraste con una cuenta cuyo `sub` no está en `MCP_OAUTH_ALLOWED_SUBJECTS`. La respuesta es JSON-RPC `This account is not allowed to use this server`, sin `WWW-Authenticate`, así que el cliente no repite el login | Copia ese `sub` a `MCP_OAUTH_ALLOWED_SUBJECTS` o entra con la cuenta correcta. |
+| 500 en la fase 2; el log muestra `token check unavailable: Could not discover jwks_uri…` o `token check unavailable: fetch failed` (u otro error de red) | `MCP_OAUTH_ISSUER` no coincide exacto con el `issuer` de AuthKit (p. ej. `/` final), o el contenedor no tiene salida a internet | Copia el issuer de la metadata (5.4). Define `MCP_OAUTH_JWKS_URL` solo si el problema es el discovery: el `iss` del token debe coincidir de todos modos. |
 | 524 | El origen tardó más de 125 s | Baja `delay` y `EVOLUTION_TIMEOUT_MS`; no uses `MCP_JSON_RESPONSE=true`. |
 | claude.ai: "Couldn't reach the MCP server" | Cloudflare bloquea `160.79.104.0/21`, la metadata PRM no responde, o el DNS solo tiene IPv6 o IPs privadas | Regla Skip; `curl` a la PRM desde fuera de tu red. |
 | claude.ai: "Authorization with the MCP server failed" | Redirección a otro host o error en el flujo OAuth | Usa la URL final exacta; vuelve a intentarlo con *Register automatically*. |
-| claude.ai conecta pero muestra 0 tools | Sondeo del protocolo 2026-07-28 contra el SDK 1.x (reportes de la comunidad) | Busca `Unsupported protocol version` en los logs; guarda la referencia `ofid_` y repórtalo. |
+| claude.ai conecta pero muestra 0 tools | Normalmente no es el protocolo: claude.ai prueba primero la versión 2026-07-28, recibe `POST /mcp 400` (precedido de `mcp: Bad Request: Unsupported protocol version: 2026-07-28`) y vuelve a la 2025-11-25; eso es normal en cada conexión. Solo falló la vuelta si después de ese 400 **no** aparecen `POST /mcp 200` (initialize) y `POST /mcp 202` | Si aparecen 200/202, la causa es otra: revisa permisos de tools y `EVOLUTION_TOOLS`. Si no aparecen, guarda la referencia `ofid_` del error de Claude y repórtalo. |
 | Claude Code: "Failed to connect" después de pasar a OAuth | Quedó el header Bearer de la fase 1 | `claude mcp remove evolution --scope user`. |
 | ChatGPT: error al crear o conectar | Falló CIMD, o el Resource Indicator no coincide | Vuelve a intentarlo eligiendo DCR; revisa 5.3. |
 | ChatGPT rechaza la acción | Pro solo permite lectura, o Lockdown Mode | Sección 7.3. |
 | ChatGPT pierde el acceso después de un tiempo | No hay refresh token (`offline_access`) | Revisa la metadata de AuthKit y vuelve a crear el plugin. |
 | ChatGPT muestra tools viejas | Metadata en caché | **Refresh** y chat nuevo. |
-| Inspector: "Unsupported protocol version" | Negoció la era 2026-07-28 | Agrega `--protocol-era legacy`. |
+| Inspector: `Version negotiation failed: the server did not offer pinned protocol version 2026-07-28…` | Usaste `--protocol-era modern`, que no permite volver a la versión anterior | Quita la opción: en el CLI `legacy` es el valor por defecto y `auto` también funciona. |
 | No puedes entrar a AuthKit | Desactivaste Sign up antes de crear tu usuario | Users → Invites. |
 | Resultado cortado o error de tamaño | Más de 150000 bytes | Pide menos datos (`take`) y evita el base64 de media. |
 
@@ -460,8 +461,10 @@ pasan tus chats de WhatsApp.
    definición de tool y el presupuesto de respuesta salen de foros. Con `message,chat`, cada tool mide
    como máximo ~900 tokens (medido sobre su esquema); si ChatGPT se queja del tamaño total, prueba
    `EVOLUTION_TOOLS=chat` (~4,500 tokens).
-4. No sé si claude.ai y ChatGPT envían el header `Origin`; por eso `MCP_ALLOWED_ORIGINS` va como
-   precaución.
+4. Un reporte de la comunidad (anthropics/claude-ai-mcp#1005) muestra a claude.ai enviando
+   `Origin: https://claude.ai/`; no sé si ChatGPT lo envía. El servidor compara los orígenes sin
+   importar la `/` final ni las mayúsculas y registra cada rechazo, así que si un cliente queda
+   fuera verás en el log qué valor agregar.
 5. claude.ai frente al SDK 1.x: reportes de la comunidad (#1064, #1110) sobre el sondeo 2026-07-28
    que en un caso dejó el conector sin tools. El fallback está verificado con el cliente del SDK v2,
    pero no con claude.ai.

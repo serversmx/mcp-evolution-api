@@ -20,18 +20,22 @@ herramientas. Guía completa en [docs/remote-deployment.md](docs/remote-deployme
   `/.well-known/oauth-protected-resource<ruta>` y en la raíz; 401 con `WWW-Authenticate` y
   `resource_metadata`; 500 sin desafío si el IdP no responde. El log explica cada rechazo sin mostrar
   el token.
-- Protecciones HTTP: Host validado, Origin fuera de `MCP_ALLOWED_ORIGINS` → 403, GET/DELETE → 405,
+- Un usuario autenticado cuyo `sub` no está permitido recibe 403 sin `WWW-Authenticate`, para que el
+  cliente no repita el inicio de sesión en bucle.
+- Protecciones HTTP: Host validado, Origin fuera de `MCP_ALLOWED_ORIGINS` → 403 (comparado como
+  `scheme://host[:puerto]`, y cada rechazo de Host u Origin queda en el log con su valor), GET/DELETE → 405,
   cuerpo limitado por `EVOLUTION_MAX_MESSAGE_BYTES` (413), `/health` sin token, log de acceso sin
   cabeceras ni cuerpos y apagado ordenado con SIGTERM.
 - En modo HTTP, `EVOLUTION_MAX_RESULT_BYTES` vale 150000 por defecto (claude.ai limita cada resultado
   a unos 150 000 caracteres); por stdio sigue en 4 MiB.
-- Imagen Docker: `MCP_HOST=0.0.0.0`, `MCP_PORT=3000`, `EXPOSE 3000` y un `HEALTHCHECK` sobre
-  `/health` que no hace nada en modo stdio. En Easypanel basta con las variables de entorno.
+- Imagen Docker: `MCP_HOST=0.0.0.0`, `EXPOSE 3000` y un `HEALTHCHECK` sobre `/health` que no hace
+  nada en modo stdio. El puerto es `MCP_PORT`, si no `PORT`, si no 3000. En Easypanel basta con las
+  variables de entorno.
 - Anotaciones MCP en las 169 herramientas (`title`, `readOnlyHint`, `destructiveHint`,
   `idempotentHint`, `openWorldHint`) desde un mapa explícito en `src/tools/annotations.ts`: las 65
   lecturas no piden confirmación en ChatGPT y Claude puede ejecutarlas sin preguntar; las 79
   destructivas (borrados, logout, bloqueos, sobrescribir configuración y cualquier envío a terceros)
-  siempre piden confirmación.
+  siempre piden confirmación. Los tests fijan las cuatro pistas de cada herramienta.
 - Dependencias directas nuevas: express 5.2.1 y jose 6.2.3.
 
 ## 0.3.0 — Unreleased
