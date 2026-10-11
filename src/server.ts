@@ -16,6 +16,7 @@ import { ZodError } from "zod";
 import type { EvolutionConfig } from "./config.js";
 import { EvolutionClient, EvolutionApiError } from "./client.js";
 import { buildRegistry, type Registry } from "./registry.js";
+import { toolAnnotations } from "./tools/annotations.js";
 
 export const PKG_NAME = "evolution-api-mcp";
 export const PKG_VERSION = "0.3.0";
@@ -36,11 +37,16 @@ export function createServer(config: EvolutionConfig, deps: ServerDeps = {}): Se
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const tools: Tool[] = registry.tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: toInputSchema(t.inputSchema),
-    }));
+    const tools: Tool[] = registry.tools.map((t) => {
+      // A tool missing from the map is listed without hints: clients then assume a destructive write.
+      const annotations = toolAnnotations[t.name];
+      return {
+        name: t.name,
+        ...(annotations && { title: annotations.title, annotations }),
+        description: t.description,
+        inputSchema: toInputSchema(t.inputSchema),
+      };
+    });
     return { tools };
   });
 
