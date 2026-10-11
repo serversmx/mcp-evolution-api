@@ -30,7 +30,7 @@ async function main(): Promise<void> {
     await startHttp(config, registry, http);
     console.error(
       `[${PKG_NAME}] ready (http) on ${http.host}:${http.port}${http.path} auth=${http.auth.mode}` +
-        (http.publicUrl ? ` public=${http.publicUrl.href}` : ""),
+        (http.resource ? ` public=${http.resource}` : ""),
     );
     return;
   }

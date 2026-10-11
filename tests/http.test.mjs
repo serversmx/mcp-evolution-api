@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
 import * as nodeModule from "node:module";
+import { connect } from "node:net";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -107,7 +108,11 @@ async function post(url, headers = {}, body = initialize) {
   return { status: res.status, headers: res.headers, text: await res.text() };
 }
 
-/** node:http request, because fetch() silently drops a custom Host header. */
+/**
+ * node:http request, because fetch() silently drops a custom Host header. The body goes as a Buffer so
+ * that node:http writes the headers on their own, as latin1: a header value then reaches the server
+ * byte for byte, e.g. "\x9b" as 0x9B (a string body would send the headers as UTF-8 with it).
+ */
 function rawRequest(port, { method = "POST", path = "/mcp", headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
     const req = httpRequest({ host: "127.0.0.1", port, method, path, headers }, (res) => {
@@ -117,7 +122,19 @@ function rawRequest(port, { method = "POST", path = "/mcp", headers = {}, body }
       res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, text }));
     });
     req.on("error", reject);
-    req.end(body);
+    req.end(body === undefined ? undefined : Buffer.from(body));
+  });
+}
+
+/** Raw bytes over TCP, for requests node:http cannot make (e.g. HTTP/1.0 without a Host header). */
+function rawSocket(port, text) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1", () => socket.end(text));
+    let reply = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => { reply += chunk; });
+    socket.on("close", () => resolve(reply));
+    socket.on("error", reject);
   });
 }
 
@@ -129,13 +146,18 @@ async function connectClient(t, url, headers) {
 }
 
 /**
- * Local OAuth authorization server: an ES256 JWKS at /jwks plus discovery metadata for its issuer
- * ("oidc", "rfc8414" or none). `outage` makes everything ("all") or only the JWKS ("jwks") answer 503;
- * `metadataIssuer` makes the metadata claim another issuer.
+ * Local OAuth authorization server: an ES256 JWKS at /jwks holding two keys, as during a key rotation
+ * (k1 signs by default, k2 is the next key), plus discovery metadata for its issuer ("oidc", "rfc8414"
+ * or none). `outage` makes everything ("all") or only the JWKS ("jwks") answer 503; `metadataIssuer`
+ * makes the metadata claim another issuer.
  */
 async function startIdp({ discovery, issuerPath = "" }) {
-  const { publicKey, privateKey } = await generateKeyPair("ES256");
-  const jwk = { ...(await exportJWK(publicKey)), kid: "k1", alg: "ES256", use: "sig" };
+  const pairs = { k1: await generateKeyPair("ES256"), k2: await generateKeyPair("ES256") };
+  const jwks = {
+    keys: await Promise.all(
+      Object.entries(pairs).map(async ([kid, { publicKey }]) => ({ ...(await exportJWK(publicKey)), kid, alg: "ES256", use: "sig" })),
+    ),
+  };
   const metadataPath = {
     oidc: `${issuerPath}/.well-known/openid-configuration`,
     rfc8414: `/.well-known/oauth-authorization-server${issuerPath}`,
@@ -151,17 +173,21 @@ async function startIdp({ discovery, issuerPath = "" }) {
       idp.metadataServed += 1;
       return reply(200, { issuer: idp.metadataIssuer ?? idp.issuer, jwks_uri: `${idp.origin}/jwks` });
     }
-    if (req.url === "/jwks" && idp.outage !== "jwks") return reply(200, { keys: [jwk] });
+    if (req.url === "/jwks" && idp.outage !== "jwks") return reply(200, jwks);
     reply(req.url === "/jwks" ? 503 : 404, { error: "unavailable" });
   });
   await listen(server);
   idp.origin = `http://127.0.0.1:${server.address().port}`;
   idp.issuer = idp.origin + issuerPath;
   idp.close = () => close(server);
-  /** Access token signed with the IdP key (or `key`); valid for 5 minutes unless `exp` says otherwise. */
-  idp.sign = async ({ aud, sub = "owner-123", iss = idp.issuer, exp = "5m", key = privateKey, ...claims }) => {
+  idp.keys = { k1: pairs.k1.privateKey, k2: pairs.k2.privateKey };
+  /**
+   * Access token signed with IdP key `kid` (kid: null leaves the header without one) or with `key`;
+   * valid for 5 minutes unless `exp` says otherwise.
+   */
+  idp.sign = async ({ aud, sub = "owner-123", iss = idp.issuer, exp = "5m", kid = "k1", key = idp.keys[kid ?? "k1"], ...claims }) => {
     const jwt = new SignJWT({ client_id: "claude", ...(sub && { sub }), ...claims })
-      .setProtectedHeader({ alg: "ES256", kid: "k1" })
+      .setProtectedHeader({ alg: "ES256", ...(kid !== null && { kid }) })
       .setIssuer(iss)
       .setAudience(aud)
       .setIssuedAt();
@@ -185,7 +211,8 @@ describe("HTTP mode with static bearer tokens", { timeout: 20000 }, () => {
     server = await startHttp(port, {
       MCP_AUTH_TOKEN: tokens.join(" , "),
       MCP_PUBLIC_URL: url,
-      MCP_ALLOWED_ORIGINS: "https://claude.ai",
+      // The second entry is written the way an operator might paste it.
+      MCP_ALLOWED_ORIGINS: "https://claude.ai, HTTPS://ChatGPT.com/",
     });
   });
   after(() => stop(server));
@@ -230,18 +257,76 @@ describe("HTTP mode with static bearer tokens", { timeout: 20000 }, () => {
     }
   });
 
-  test("an Origin outside MCP_ALLOWED_ORIGINS gets 403 and a listed one is served", async () => {
-    const evil = await post(url, { ...bearer(tokens[0]), origin: "https://evil.example" });
-    assert.equal(evil.status, 403);
-    const listed = await post(url, { ...bearer(tokens[0]), origin: "https://claude.ai" });
-    assert.equal(listed.status, 200, listed.text);
+  test("Origins are compared as scheme://host[:port]: any spelling of a listed origin is served", async () => {
+    // claude.ai has been reported sending "Origin: https://claude.ai/" (trailing slash).
+    const served = ["https://claude.ai", "https://claude.ai/", "https://Claude.ai", "HTTPS://CLAUDE.AI:443", "https://chatgpt.com"];
+    for (const origin of served) {
+      const res = await post(url, { ...bearer(tokens[0]), origin });
+      assert.equal(res.status, 200, `${origin}: ${res.text}`);
+    }
+    const refused = ["https://evil.example", "http://claude.ai", "https://claude.ai:8443", "https://claude.ai.evil.example", "null"];
+    for (const origin of refused) {
+      assert.equal((await post(url, { ...bearer(tokens[0]), origin })).status, 403, origin);
+    }
   });
 
-  test("a Host other than the MCP_PUBLIC_URL host gets 403", async () => {
+  test("a rejected Origin is logged with its value, control characters escaped and length bounded", async () => {
+    const res = await post(url, { ...bearer(tokens[0]), origin: "https://claude.com" });
+    assert.equal(res.status, 403);
+    assert.deepEqual(JSON.parse(res.text), {
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Origin not allowed: https://claude.com" },
+      id: null,
+    });
+    await waitForLog(server, /\[evolution-api-mcp\] rejected Origin "https:\/\/claude\.com": not in MCP_ALLOWED_ORIGINS\n/);
+
+    // Header values arrive as latin1, so they can carry C1 controls: U+009B is a terminal CSI.
+    const csi = await rawRequest(port, {
+      headers: { ...mcpHeaders, ...bearer(tokens[0]), origin: "https://evil.example\x9b2J" },
+      body: JSON.stringify(initialize),
+    });
+    assert.equal(csi.status, 403);
+    await waitForLog(server, /rejected Origin "https:\/\/evil\.example\\u009b2J": not in MCP_ALLOWED_ORIGINS\n/);
+
+    assert.equal((await post(url, { ...bearer(tokens[0]), origin: `https://${"a".repeat(5000)}.example` })).status, 403);
+    const cut = (stderr) => stderr.split("\n").find((line) => /rejected Origin "https:\/\/a+…": not in MCP_ALLOWED_ORIGINS$/.test(line));
+    await waitForLog(server, (stderr) => cut(stderr) !== undefined);
+    assert.ok(cut(server.stderr).length < 1000, `logged ${cut(server.stderr).length} characters`);
+  });
+
+  test("a Host other than the MCP_PUBLIC_URL host gets 403 and is logged with its value", async () => {
     const request = (host) =>
       rawRequest(port, { headers: { ...mcpHeaders, ...bearer(tokens[0]), host }, body: JSON.stringify(initialize) });
-    assert.equal((await request("evil.example")).status, 403);
+    const evil = await request("evil.example:8443");
+    assert.equal(evil.status, 403);
+    assert.deepEqual(JSON.parse(evil.text), { jsonrpc: "2.0", error: { code: -32000, message: "Invalid Host: evil.example" }, id: null });
+    await waitForLog(server, /\[evolution-api-mcp\] rejected Host "evil\.example:8443": not in MCP_ALLOWED_HOSTS \/ MCP_PUBLIC_URL\n/);
+    assert.equal((await request("evil\x85.example")).status, 403);
+    await waitForLog(server, /rejected Host "evil\\u0085\.example": not in MCP_ALLOWED_HOSTS \/ MCP_PUBLIC_URL\n/);
     assert.equal((await request(`127.0.0.1:${port}`)).status, 200);
+  });
+
+  test("a request without a Host header (HTTP/1.0) gets 403 too", async () => {
+    const body = JSON.stringify(initialize);
+    const head = [
+      "POST /mcp HTTP/1.0",
+      "content-type: application/json",
+      "accept: application/json, text/event-stream",
+      `authorization: Bearer ${tokens[0]}`,
+      `content-length: ${Buffer.byteLength(body)}`,
+    ];
+    const reply = await rawSocket(port, `${head.join("\r\n")}\r\n\r\n${body}`);
+    assert.match(reply, /^HTTP\/1\.1 403 /);
+    await waitForLog(server, /rejected Host "": not in MCP_ALLOWED_HOSTS \/ MCP_PUBLIC_URL\n/);
+  });
+
+  test("a client header echoed in a transport error is logged with control characters escaped", async () => {
+    const res = await rawRequest(port, {
+      headers: { ...mcpHeaders, ...bearer(tokens[0]), "mcp-protocol-version": "2099-01-01\x9b2J" },
+      body: JSON.stringify(rpc(2, "tools/list")),
+    });
+    assert.equal(res.status, 400);
+    await waitForLog(server, /mcp: Bad Request: Unsupported protocol version: 2099-01-01\\u009b2J /);
   });
 
   test("GET and DELETE on the MCP endpoint get 405 with Allow: POST", async () => {
@@ -324,13 +409,13 @@ describe("HTTP mode as an OAuth resource server (OIDC discovery)", { timeout: 20
     assert.equal(res.status, 200, res.text);
   });
 
-  test("tokens for another audience, issuer, subject or signing key, expired or never expiring, get 401", async () => {
+  test("tokens for another audience, issuer or signing key, without a string subject, expired or never expiring, get 401", async () => {
     const { privateKey: foreignKey } = await generateKeyPair("ES256");
     const cases = {
       audience: { aud: "https://other.example/mcp" },
       issuer: { aud: url, iss: `${idp.issuer}/other` },
-      subject: { aud: url, sub: "stranger" },
       "no subject": { aud: url, sub: null },
+      "numeric subject": { aud: url, sub: 123 },
       "signing key": { aud: url, key: foreignKey },
       expired: { aud: url, exp: secondsAgo(120) },
       "no expiry": { aud: url, exp: null },
@@ -342,9 +427,53 @@ describe("HTTP mode as an OAuth resource server (OIDC discovery)", { timeout: 20
     }
   });
 
+  test("a valid token for a subject that is not allowed gets 403 without a challenge, on every method", async () => {
+    // A 401 challenge would send the client back to sign in as the same account, in a loop.
+    const token = await idp.sign({ aud: url, sub: "stranger" });
+    for (const method of ["POST", "GET"]) {
+      const res = await fetch(url, {
+        method,
+        headers: { ...mcpHeaders, ...bearer(token) },
+        ...(method === "POST" && { body: JSON.stringify(initialize) }),
+      });
+      assert.equal(res.status, 403, method);
+      assert.equal(res.headers.get("www-authenticate"), null, method);
+      const body = await res.json();
+      assert.deepEqual([body.jsonrpc, body.id, body.error.code], ["2.0", null, -32000], method);
+      assert.match(body.error.message, /not allowed/, method);
+    }
+  });
+
   test("the log says why a token was rejected, naming a subject that is not allowed", async () => {
     await waitForLog(server, /token rejected: .*"aud"/);
     await waitForLog(server, /token rejected: sub "stranger" is not in MCP_OAUTH_ALLOWED_SUBJECTS/);
+  });
+
+  test("a forged token header cannot add lines or terminal escapes to the log", async () => {
+    // jose quotes an unknown "crit" name in its error message, before any signature check.
+    const marker = `FORGED-${randomBytes(4).toString("hex")}`;
+    const crit = `x\n[evolution-api-mcp] ${marker}\n\u001b[2J\u009b31m\u{2028}end`;
+    const part = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const token = `${part({ alg: "ES256", kid: "k1", crit: [crit] })}.${part({ sub: "owner-123" })}.AAAA`;
+    const res = await post(url, bearer(token));
+    assert.equal(res.status, 401);
+
+    const entry = `token rejected: Extension Header Parameter "x\\u000a[evolution-api-mcp] ${marker}\\u000a\\u001b[2J\\u009b31m\\u2028end" is not recognized\n`;
+    await waitForLog(server, (stderr) => stderr.includes(entry));
+    assert.equal(server.stderr.split("\n").some((line) => line.startsWith(`[evolution-api-mcp] ${marker}`)), false);
+    assert.doesNotMatch(server.stderr, /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u{2028}\u{2029}]/u);
+  });
+
+  test("a token without a kid is checked against every key of a rotating key set", async () => {
+    // Both IdP keys match a kid-less ES256 token, so jose hands over the candidates instead of one key.
+    for (const kid of ["k1", "k2"]) {
+      const res = await post(url, bearer(await idp.sign({ aud: url, kid: null, key: idp.keys[kid] })));
+      assert.equal(res.status, 200, `signed by ${kid}: ${res.text}`);
+    }
+    const { privateKey: foreignKey } = await generateKeyPair("ES256");
+    const forged = await post(url, bearer(await idp.sign({ aud: url, kid: null, key: foreignKey })));
+    assert.equal(forged.status, 401);
+    assert.match(forged.headers.get("www-authenticate") ?? "", /^Bearer error="invalid_token"/);
   });
 
   test("SIGTERM exits 0 with nothing on stdout and no token in the logs", async () => {
@@ -374,13 +503,14 @@ describe("OAuth at the root of MCP_PUBLIC_URL with RFC 8414 discovery and IdP ou
     await idp?.close();
   });
 
-  test("a URL without a path serves MCP at / with root protected resource metadata", async () => {
+  test("a URL without a path serves MCP at / and advertises the resource without a trailing slash", async () => {
     const res = await post(url);
     assert.equal(res.status, 401);
     const challenge = res.headers.get("www-authenticate") ?? "";
     assert.ok(challenge.includes(`resource_metadata="http://127.0.0.1:${port}/.well-known/oauth-protected-resource"`), challenge);
     const metadata = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-protected-resource`).then((r) => r.json());
-    assert.equal(metadata.resource, url);
+    // The MCP spec's canonical form, and what users type: https://mcp.example.com, not .../
+    assert.equal(metadata.resource, `http://127.0.0.1:${port}`);
   });
 
   test("an unreachable IdP gets 500 without a challenge, so clients do not loop on sign-in", async () => {
@@ -416,6 +546,15 @@ describe("OAuth at the root of MCP_PUBLIC_URL with RFC 8414 discovery and IdP ou
       assert.equal(res.status, 200, res.text);
     }
     assert.equal(idp.metadataServed, served);
+  });
+
+  test("a root resource accepts tokens for its URL with or without the trailing slash, and nothing else", async () => {
+    const origin = `http://127.0.0.1:${port}`;
+    for (const aud of [origin, `${origin}/`]) {
+      const res = await post(url, bearer(await idp.sign({ aud })));
+      assert.equal(res.status, 200, `${aud}: ${res.text}`);
+    }
+    assert.equal((await post(url, bearer(await idp.sign({ aud: `${origin}/mcp` })))).status, 401);
   });
 });
 
@@ -662,6 +801,44 @@ test("HTTP settings that could never work or would weaken auth are rejected at s
   }
   // The checks above reject only what they name: a valid OAuth setup with an internal http JWKS loads.
   assert.equal(loadHttpConfig({ ...oauth, MCP_OAUTH_JWKS_URL: "http://keycloak:8080/certs" }).auth.mode, "oauth");
+});
+
+test("a plain-http MCP_OAUTH_JWKS_URL is accepted only for a private host", async () => {
+  // The key set decides which signatures are trusted: over plain http to a public host, anyone on
+  // the path could serve their own keys.
+  const { loadHttpConfig } = await import("../dist/http.js");
+  const oauth = { MCP_OAUTH_ISSUER: "https://idp.example", MCP_PUBLIC_URL: "https://mcp.example/mcp", MCP_OAUTH_ALLOWED_SUBJECTS: "owner-123" };
+  const jwksUrl = (url) => loadHttpConfig({ ...oauth, MCP_OAUTH_JWKS_URL: url }).auth.jwksUrl.href;
+  const accepted = [
+    "https://idp.example.com/.well-known/jwks.json",
+    "http://keycloak:8080/certs", // single-label name: a Docker or Easypanel service
+    "http://localhost:8080/jwks",
+    "http://127.0.0.1:8080/jwks",
+    "http://127.8.9.10/jwks",
+    "http://[::1]:8080/jwks",
+    "http://10.0.0.5/jwks",
+    "http://172.16.0.1/jwks",
+    "http://172.31.255.254/jwks",
+    "http://192.168.1.10/jwks",
+    "http://[fc00::1]/jwks",
+    "http://[fd12:3456::1]/jwks",
+    "http://idp.internal/jwks",
+    "http://auth.corp.internal/jwks",
+    "http://idp.local/jwks",
+  ];
+  for (const url of accepted) assert.equal(jwksUrl(url), url, url);
+  const refused = [
+    "http://idp.example.com/.well-known/jwks.json",
+    "http://203.0.113.10/jwks",
+    "http://11.0.0.1/jwks",
+    "http://172.15.255.255/jwks",
+    "http://172.32.0.1/jwks",
+    "http://192.169.0.1/jwks",
+    "http://[2001:db8::1]/jwks",
+    "http://idp.internal.example.com/jwks",
+    "http://idp.notlocal/jwks",
+  ];
+  for (const url of refused) assert.throws(() => jwksUrl(url), /MCP_OAUTH_JWKS_URL must use https/, url);
 });
 
 test("stdio mode never loads express or jose", { timeout: 10000 }, async (t) => {

@@ -12,14 +12,21 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Server as HttpServer } from "node:http";
 
-import express, { type NextFunction, type Request, type RequestHandler, type Response } from "express";
-import { createRemoteJWKSet, errors as joseErrors, jwtVerify, type JWTPayload } from "jose";
+import express, { type Request, type RequestHandler, type Response } from "express";
+import {
+  createRemoteJWKSet,
+  errors as joseErrors,
+  jwtVerify,
+  type JWTPayload,
+  type JWTVerifyGetKey,
+  type JWTVerifyOptions,
+  type JWTVerifyResult,
+} from "jose";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { InvalidTokenError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 
 import type { EvolutionConfig } from "./config.js";
 import { EvolutionClient } from "./client.js";
@@ -31,7 +38,8 @@ export type AuthMode = "bearer" | "oauth" | "none";
 interface OAuthSettings {
   mode: "oauth";
   issuer: string;
-  audience: string;
+  /** Accepted `aud` values: any one of them is enough. */
+  audience: string | string[];
   jwksUrl?: URL;
   requiredScopes: string[];
   allowedSubjects?: Set<string>;
@@ -42,10 +50,13 @@ export interface HttpConfig {
   port: number;
   /** Route of the MCP endpoint: MCP_PATH, else the path of MCP_PUBLIC_URL, else /mcp. */
   path: string;
-  /** Public URL of the MCP endpoint as users type it into Claude/ChatGPT (RFC 9728 `resource`). */
+  /** Public URL of the MCP endpoint (MCP_PUBLIC_URL, normalized; a root URL has path "/"). */
   publicUrl?: URL;
+  /** RFC 9728 `resource`: the public URL as users type it into Claude/ChatGPT, no trailing slash. */
+  resource?: string;
   /** Hostnames accepted in the Host header; undefined disables the check. */
   allowedHosts?: string[];
+  /** Origins accepted in the Origin header, in canonical form (see canonicalOrigin). */
   allowedOrigins: string[];
   jsonResponse: boolean;
   shutdownTimeoutMs: number;
@@ -62,6 +73,24 @@ const LOOPBACK_HOSTS = ["localhost", "127.0.0.1"];
 const PRM_PATH = "/.well-known/oauth-protected-resource";
 /** Allowed clock skew with the IdP for exp/nbf, in seconds. */
 const CLOCK_TOLERANCE_S = 30;
+/** Longest client-supplied value (Host, Origin) written to the log, in characters. */
+const MAX_LOGGED_VALUE = 200;
+
+/**
+ * Text from a client or a token, made safe for a log line: C0 and C1 controls, DEL and U+2028/U+2029
+ * become \uXXXX, so it can neither start a forged line nor send terminal escape sequences.
+ */
+function logSafe(text: string): string {
+  return text.replace(
+    /[\u0000-\u001f\u007f-\u009f\u{2028}\u{2029}]/gu,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
+/** A client-supplied header value for the log: escaped, and cut to MAX_LOGGED_VALUE characters. */
+function logValue(value: string): string {
+  return value.length > MAX_LOGGED_VALUE ? `${logSafe(value.slice(0, MAX_LOGGED_VALUE))}…` : logSafe(value);
+}
 
 function list(raw: string | undefined): string[] {
   return (raw ?? "")
@@ -102,10 +131,18 @@ function parsePublicUrl(raw: string | undefined): URL | undefined {
   if (!raw?.trim()) return undefined;
   const url = httpsUrl("MCP_PUBLIC_URL", raw.trim());
   if (url.search) throw new Error(`MCP_PUBLIC_URL must not have a query string (got ${raw.trim()})`);
-  // The RFC 9728 `resource` must equal what users type: canonical form, no fragment or trailing slash.
+  // Canonical form (see resourceOf): no fragment, no trailing slash after the path.
   url.hash = "";
   url.pathname = url.pathname.replace(/\/+$/, "") || "/";
   return url;
+}
+
+/**
+ * The RFC 9728 `resource` must equal what users type: no fragment and no trailing slash, also for a
+ * root URL (the MCP spec's canonical form is https://mcp.example.com, not https://mcp.example.com/).
+ */
+function resourceOf(url: URL): string {
+  return url.pathname === "/" ? url.origin : url.href;
 }
 
 /** Hostname as the Host check compares it: lowercase, without scheme, port or path. */
@@ -114,6 +151,20 @@ function allowedHostname(entry: string): string {
     return new URL(entry.includes("://") ? entry : `http://${entry}`).hostname;
   } catch {
     throw new Error(`MCP_ALLOWED_HOSTS has an invalid host: ${entry}`);
+  }
+}
+
+/**
+ * Origin as the Origin check compares it: scheme://host[:port], lowercase and without a default port
+ * or path, so "https://Claude.ai/" matches "https://claude.ai". "null" and values that are not URLs
+ * are kept verbatim.
+ */
+function canonicalOrigin(value: string): string {
+  try {
+    const { origin } = new URL(value);
+    return origin === "null" ? value : origin;
+  } catch {
+    return value;
   }
 }
 
@@ -166,10 +217,12 @@ function loadAuth(env: NodeJS.ProcessEnv, publicUrl: URL | undefined): HttpConfi
         );
       }
       const jwksUrl = env.MCP_OAUTH_JWKS_URL?.trim();
+      const resource = resourceOf(publicUrl);
       return {
         mode,
         issuer,
-        audience: env.MCP_OAUTH_AUDIENCE?.trim() || publicUrl.href,
+        // A root resource is also accepted with the trailing slash that older clients add.
+        audience: env.MCP_OAUTH_AUDIENCE?.trim() || (publicUrl.pathname === "/" ? [resource, `${resource}/`] : resource),
         jwksUrl: jwksUrl ? parseJwksUrl(jwksUrl) : undefined,
         requiredScopes: list(env.MCP_OAUTH_REQUIRED_SCOPES?.replace(/\s+/g, ",")),
         allowedSubjects: subjects.length > 0 ? new Set(subjects) : undefined,
@@ -193,11 +246,34 @@ function loadAuth(env: NodeJS.ProcessEnv, publicUrl: URL | undefined): HttpConfi
   }
 }
 
-/** An operator-chosen JWKS endpoint; plain http is allowed for an IdP on a private network. */
+/**
+ * Hosts that a plain-http JWKS URL may name: loopback, a single-label name (a Docker or Easypanel
+ * service such as `keycloak`), a .internal or .local name, or an RFC 1918 / ULA address. A guard
+ * against a forgotten "s", not proof that the host is private: DNS can point any name anywhere.
+ */
+function isPrivateHost(hostname: string): boolean {
+  // URL.hostname normalizes IPv4 to dotted decimal and keeps the brackets of an IPv6 address.
+  if (hostname.startsWith("[")) return hostname === "[::1]" || /^\[f[cd][0-9a-f]{2}:/.test(hostname);
+  const ipv4 = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(hostname);
+  if (ipv4) {
+    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  }
+  return !hostname.includes(".") || /\.(internal|local)$/.test(hostname);
+}
+
+/** An operator-chosen JWKS endpoint: https, or plain http to a private host (isPrivateHost). */
 function parseJwksUrl(raw: string): URL {
   const url = URL.canParse(raw) ? new URL(raw) : undefined;
   if (url?.protocol !== "https:" && url?.protocol !== "http:") {
     throw new Error(`MCP_OAUTH_JWKS_URL must be an http(s) URL, got: ${raw}`);
+  }
+  // The key set decides which signatures are trusted: never fetch it in clear over the internet.
+  if (url.protocol === "http:" && !isPrivateHost(url.hostname)) {
+    throw new Error(
+      "MCP_OAUTH_JWKS_URL must use https; plain http is only allowed for loopback, a single-label host " +
+        `(e.g. a Docker service), a .internal or .local name, or an RFC 1918/ULA address, got: ${raw}`,
+    );
   }
   return url;
 }
@@ -227,8 +303,9 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
     port: positiveInt(env, env.MCP_PORT?.trim() ? "MCP_PORT" : "PORT", 3000, 65535),
     path,
     publicUrl,
+    resource: publicUrl && resourceOf(publicUrl),
     allowedHosts,
-    allowedOrigins: list(env.MCP_ALLOWED_ORIGINS),
+    allowedOrigins: list(env.MCP_ALLOWED_ORIGINS).map(canonicalOrigin),
     jsonResponse: flag(env, "MCP_JSON_RESPONSE"),
     shutdownTimeoutMs: positiveInt(env, "MCP_SHUTDOWN_TIMEOUT_MS", 8000),
     auth: loadAuth(env, publicUrl),
@@ -314,6 +391,31 @@ function reasonOf(err: unknown): string {
   return typeof code === "string" ? `${err.message} (${code})` : err.message;
 }
 
+/** Log reason when MCP_OAUTH_ALLOWED_SUBJECTS does not list a token's `sub` (null when it has none). */
+function subjectReason(sub: unknown): string {
+  return `sub ${JSON.stringify(sub ?? null)} is not in MCP_OAUTH_ALLOWED_SUBJECTS`;
+}
+
+/**
+ * jwtVerify against the issuer's key set. A token without a string `kid` can match several keys (two
+ * keys of one type during a rotation): jose then hands over the candidates, and each one is tried.
+ */
+async function verifyJwt(token: string, keys: JWTVerifyGetKey, options: JWTVerifyOptions): Promise<JWTVerifyResult> {
+  try {
+    return await jwtVerify(token, keys, options);
+  } catch (err) {
+    if (!(err instanceof joseErrors.JWKSMultipleMatchingKeys)) throw err;
+    for await (const key of err) {
+      try {
+        return await jwtVerify(token, key, options);
+      } catch (inner) {
+        if (!(inner instanceof joseErrors.JWSSignatureVerificationFailed)) throw inner;
+      }
+    }
+    throw new joseErrors.JWSSignatureVerificationFailed();
+  }
+}
+
 function oauthVerifier(auth: OAuthSettings, resource: URL): OAuthTokenVerifier {
   const keys = issuerKeys(auth);
   return {
@@ -321,15 +423,17 @@ function oauthVerifier(auth: OAuthSettings, resource: URL): OAuthTokenVerifier {
       // Why a token failed, for the operator only; clients get a generic error.
       let reason: string | undefined;
       try {
-        const { payload } = await jwtVerify(token, await keys(), {
+        const { payload } = await verifyJwt(token, await keys(), {
           issuer: auth.issuer,
           audience: auth.audience,
           clockTolerance: CLOCK_TOLERANCE_S,
           requiredClaims: ["exp"],
         });
-        if (auth.allowedSubjects && !(payload.sub && auth.allowedSubjects.has(payload.sub))) {
-          reason = `sub ${JSON.stringify(payload.sub ?? null)} is not in MCP_OAUTH_ALLOWED_SUBJECTS`;
-          throw new InvalidTokenError("Token subject is not allowed to use this server");
+        // Without a string sub the token is malformed for this server (401). A valid token for an
+        // account that is not listed gets 403 from subjectGuard instead.
+        if (auth.allowedSubjects && (typeof payload.sub !== "string" || !payload.sub)) {
+          reason = subjectReason(payload.sub);
+          throw new InvalidTokenError("Token has no subject");
         }
         const claims = payload as Record<string, unknown>;
         return {
@@ -344,26 +448,64 @@ function oauthVerifier(auth: OAuthSettings, resource: URL): OAuthTokenVerifier {
       } catch (err) {
         const authError = toAuthError(err);
         const outcome = authError instanceof ServerError ? "token check unavailable" : "token rejected";
-        console.error(`[${PKG_NAME}] ${outcome}: ${reason ?? reasonOf(err)}`);
+        // jose quotes parts of the token in some messages (e.g. an unknown "crit" name): escape them.
+        console.error(`[${PKG_NAME}] ${outcome}: ${logSafe(reason ?? reasonOf(err))}`);
         throw authError;
       }
     },
   };
 }
 
-function authGuard(http: HttpConfig, resourceMetadataUrl: string | undefined): RequestHandler {
+/**
+ * MCP_OAUTH_ALLOWED_SUBJECTS, checked after the token: a valid token for an account that is not listed
+ * gets 403 without a WWW-Authenticate challenge. A 401 would make clients sign in again as the same
+ * account, in a loop, and insufficient_scope would start a step-up flow that cannot help either.
+ */
+function subjectGuard(allowed: Set<string>): RequestHandler {
+  return (req, res, next) => {
+    const sub = req.auth?.extra?.sub;
+    if (typeof sub === "string" && allowed.has(sub)) return next();
+    console.error(`[${PKG_NAME}] token rejected: ${logSafe(subjectReason(sub))}`);
+    jsonRpcError(res, 403, "This account is not allowed to use this server");
+  };
+}
+
+/** The middleware every request to the MCP endpoint goes through first (none for MCP_AUTH_MODE=none). */
+function authGuard(http: HttpConfig, resourceMetadataUrl: string | undefined): RequestHandler[] {
   switch (http.auth.mode) {
     case "bearer":
-      return requireBearerAuth({ verifier: staticTokenVerifier(http.auth.tokenDigests) });
-    case "oauth":
-      return requireBearerAuth({
+      return [requireBearerAuth({ verifier: staticTokenVerifier(http.auth.tokenDigests) })];
+    case "oauth": {
+      const bearer = requireBearerAuth({
         verifier: oauthVerifier(http.auth, http.publicUrl!),
         requiredScopes: http.auth.requiredScopes,
         resourceMetadataUrl,
       });
+      return http.auth.allowedSubjects ? [bearer, subjectGuard(http.auth.allowedSubjects)] : [bearer];
+    }
     case "none":
-      return (_req: Request, _res: Response, next: NextFunction) => next();
+      return [];
   }
+}
+
+/**
+ * DNS-rebinding / misrouting guard: the Host header must name an allowed hostname (any port). Same
+ * checks and 403 bodies as the SDK's hostHeaderValidation, plus a log line with the rejected value.
+ */
+function hostGuard(allowedHosts: string[]): RequestHandler {
+  return (req, res, next) => {
+    const host = req.headers.host ?? "";
+    let hostname: string | undefined;
+    try {
+      hostname = new URL(`http://${host}`).hostname;
+    } catch {
+      // Not a host at all: rejected below.
+    }
+    if (host && hostname !== undefined && allowedHosts.includes(hostname)) return next();
+    console.error(`[${PKG_NAME}] rejected Host "${logValue(host)}": not in MCP_ALLOWED_HOSTS / MCP_PUBLIC_URL`);
+    if (!host) return jsonRpcError(res, 403, "Missing Host header");
+    jsonRpcError(res, 403, hostname === undefined ? `Invalid Host header: ${host}` : `Invalid Host: ${hostname}`);
+  };
 }
 
 function jsonRpcError(res: Response, status: number, message: string, headers: Record<string, string> = {}) {
@@ -395,7 +537,7 @@ export async function startHttp(config: EvolutionConfig, registry: Registry, htt
   let resourceMetadataUrl: string | undefined;
   if (http.auth.mode === "oauth" && http.publicUrl) {
     const metadata = {
-      resource: http.publicUrl.href,
+      resource: http.resource,
       authorization_servers: [http.auth.issuer],
       bearer_methods_supported: ["header"],
       resource_name: "Evolution API MCP",
@@ -410,23 +552,24 @@ export async function startHttp(config: EvolutionConfig, registry: Registry, htt
   }
 
   // DNS-rebinding / misrouting guard: Host must be the public hostname (port-agnostic).
-  if (http.allowedHosts) app.use(hostHeaderValidation(http.allowedHosts));
+  if (http.allowedHosts) app.use(hostGuard(http.allowedHosts));
   else console.error(`[${PKG_NAME}] warning: Host header not validated (set MCP_PUBLIC_URL or MCP_ALLOWED_HOSTS)`);
 
-  // MCP spec: an Origin that is present and not allowed MUST get 403. Server-side clients send none.
+  // MCP spec: an Origin that is present and not allowed MUST get 403. Hosted clients such as claude.ai
+  // have been seen sending one, so a rejection is logged with the value to add to MCP_ALLOWED_ORIGINS.
   app.use((req, res, next) => {
     const origin = req.header("origin");
-    if (origin && !http.allowedOrigins.includes(origin)) {
-      return jsonRpcError(res, 403, `Origin not allowed: ${origin}`);
-    }
-    next();
+    if (!origin || http.allowedOrigins.includes(canonicalOrigin(origin))) return next();
+    console.error(`[${PKG_NAME}] rejected Origin "${logValue(origin)}": not in MCP_ALLOWED_ORIGINS`);
+    jsonRpcError(res, 403, `Origin not allowed: ${origin}`);
   });
 
   const guard = authGuard(http, resourceMetadataUrl);
 
-  app.post(http.path, guard, async (req: Request, res: Response) => {
+  app.post(http.path, ...guard, async (req: Request, res: Response) => {
     const server = createServer(config, { registry, client });
-    server.onerror = (err) => console.error(`[${PKG_NAME}] mcp: ${err.message}`);
+    // Transport errors can echo client input (e.g. the MCP-Protocol-Version header): escape it.
+    server.onerror = (err) => console.error(`[${PKG_NAME}] mcp: ${logSafe(err.message)}`);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // stateless
       enableJsonResponse: http.jsonResponse,
@@ -441,13 +584,13 @@ export async function startHttp(config: EvolutionConfig, registry: Registry, htt
       await server.connect(transport);
       await transport.handleRequest(req, res);
     } catch (err) {
-      console.error(`[${PKG_NAME}] request failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`[${PKG_NAME}] request failed: ${logSafe(err instanceof Error ? err.message : String(err))}`);
       if (!res.headersSent) jsonRpcError(res, 500, "Internal server error");
     }
   });
 
   // Stateless: no standalone SSE stream (GET) and no sessions to delete (DELETE).
-  app.all(http.path, guard, (_req, res) => jsonRpcError(res, 405, "Method not allowed.", { Allow: "POST" }));
+  app.all(http.path, ...guard, (_req, res) => jsonRpcError(res, 405, "Method not allowed.", { Allow: "POST" }));
 
   app.use((_req, res) => jsonRpcError(res, 404, "Not found"));
 

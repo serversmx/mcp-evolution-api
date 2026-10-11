@@ -36,9 +36,9 @@ COPY --from=builder /app/dist ./dist
 # Run as the unprivileged "node" user shipped with the base image.
 USER node
 
-# HTTP-mode defaults only; they are inert unless MCP_TRANSPORT=http (stdio stays the default).
-ENV MCP_HOST=0.0.0.0 \
-    MCP_PORT=3000
+# HTTP-mode default only; inert unless MCP_TRANSPORT=http (stdio stays the default). The port is
+# left unset on purpose: MCP_PORT, else PORT (set by platforms such as Cloud Run or Heroku), else 3000.
+ENV MCP_HOST=0.0.0.0
 EXPOSE 3000
 
 # No-op in stdio mode; in HTTP mode probes the unauthenticated /health liveness route.
@@ -46,5 +46,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["node", "-e", "const e = process.env; if ((e.MCP_TRANSPORT || '').trim().toLowerCase() !== 'http') process.exit(0); const port = (e.MCP_PORT || '').trim() || (e.PORT || '').trim() || '3000'; fetch('http://127.0.0.1:' + port + '/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 
 # stdio by default: clients spawn it with `docker run -i`. Set MCP_TRANSPORT=http to serve
-# Streamable HTTP on MCP_PORT (Easypanel: environment only, no command override needed).
+# Streamable HTTP on MCP_PORT, else PORT, else 3000 (Easypanel: environment only, no command override).
 ENTRYPOINT ["node", "dist/index.js"]

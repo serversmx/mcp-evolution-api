@@ -1,7 +1,7 @@
 {
   "name": "evolution-api-mcp",
   "version": "0.4.0",
-  "description": "MCP server for Evolution API v2 (WhatsApp) — messaging, management and integrations over stdio.",
+  "description": "MCP server for Evolution API v2 (WhatsApp) — messaging, management and integrations over stdio or Streamable HTTP.",
   "type": "module",
   "repository": {
     "type": "git",
